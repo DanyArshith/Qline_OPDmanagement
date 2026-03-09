@@ -1,0 +1,3 @@
+# Qline Frontend
+
+@import url('https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600;700&display=swap');
