@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import api from '@/lib/api'
 import { timeAgo, formatDate } from '@/lib/utils'
@@ -16,14 +16,14 @@ export default function AdminUserDetailPage({ params }) {
     const [loading, setLoading] = useState(true)
     const [toggling, setToggling] = useState(false)
 
-    const load = () => {
+    const load = useCallback(() => {
         api.get(`/api/admin/users/${id}`)
             .then(r => setData(r.data))
             .catch(() => toast.error('Failed to load user'))
             .finally(() => setLoading(false))
-    }
+    }, [id, toast])
 
-    useEffect(() => { load() }, [id])
+    useEffect(() => { load() }, [load])
 
     const toggleStatus = async () => {
         setToggling(true)

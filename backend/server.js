@@ -269,12 +269,20 @@ const scheduleSystemJobs = async () => {
     }
 };
 
-// Start workers (in this process for now, ideally separate)
-// In production, run: node workers/index.js
-require('./workers/emailWorker');
-require('./workers/reminderWorker');
-require('./workers/analyticsWorker');
-require('./workers/notificationWorker');
+// Start workers in API process only when explicitly enabled, or by default in development.
+const shouldRunEmbeddedWorkers =
+    process.env.RUN_WORKERS_IN_API === 'true' ||
+    (!process.env.RUN_WORKERS_IN_API && (process.env.NODE_ENV || 'development') !== 'production');
+
+if (shouldRunEmbeddedWorkers) {
+    require('./workers/emailWorker');
+    require('./workers/reminderWorker');
+    require('./workers/analyticsWorker');
+    require('./workers/notificationWorker');
+    logger.info('Embedded BullMQ workers started');
+} else {
+    logger.info('Embedded workers disabled (expecting standalone worker process)');
+}
 
 const { warmCache } = require('./utils/cacheWarmer');
 const { ensureIndexes } = require('./utils/dbOptimizer');
@@ -290,7 +298,6 @@ Promise.all([
     logger.error('Startup tasks failed (non-fatal):', err.message);
 });
 
-logger.info('🚀 BullMQ workers started');
 
 // Start server
 const PORT = process.env.PORT || 5000;
@@ -317,3 +324,4 @@ process.on('SIGTERM', async () => {
 });
 
 module.exports = { app, server, io };
+

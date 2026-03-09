@@ -28,13 +28,13 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json ./
 
+# Copy source from builder (not raw host files)
+COPY --from=builder /app .
+
 # Install ONLY production deps
 RUN npm ci --frozen-lockfile --omit=dev && \
     # Clean npm cache to reduce image size
     npm cache clean --force
-
-# Copy source from builder (not raw host files)
-COPY --from=builder /app .
 
 # Fix ownership
 RUN chown -R qline:qline /app

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import api from '@/lib/api';
@@ -25,11 +25,7 @@ export default function DoctorDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    fetchDoctorDetail();
-  }, [params.id]);
-
-  const fetchDoctorDetail = async () => {
+  const fetchDoctorDetail = useCallback(async () => {
     try {
       setLoading(true);
       const res = await api.get(`/api/doctors/${params.id}`);
@@ -50,7 +46,11 @@ export default function DoctorDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [params.id]);
+
+  useEffect(() => {
+    fetchDoctorDetail();
+  }, [fetchDoctorDetail]);
 
   if (loading) {
     return (

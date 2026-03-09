@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import api from '@/lib/api';
@@ -19,11 +19,7 @@ export default function MedicalRecordDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    fetchRecord();
-  }, [params.id]);
-
-  const fetchRecord = async () => {
+  const fetchRecord = useCallback(async () => {
     try {
       setLoading(true);
       const res = await api.get(`/api/patient/medical-records/${params.id}`);
@@ -33,7 +29,11 @@ export default function MedicalRecordDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [params.id]);
+
+  useEffect(() => {
+    fetchRecord();
+  }, [fetchRecord]);
 
   if (loading) {
     return (

@@ -38,6 +38,7 @@ services:
       ADMIN_IP_WHITELIST: ${ADMIN_IP_WHITELIST:-}
       EMAIL_WORKER_CONCURRENCY: ${EMAIL_WORKER_CONCURRENCY:-5}
       REMINDER_WORKER_CONCURRENCY: ${REMINDER_WORKER_CONCURRENCY:-3}
+      RUN_WORKERS_IN_API: ${RUN_WORKERS_IN_API:-false}
     depends_on:
       mongo:
         condition: service_healthy
@@ -106,7 +107,7 @@ services:
     networks:
       - qline_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -120,7 +121,7 @@ services:
     container_name: qline_mongo
     restart: unless-stopped
     ports:
-      - "27018:27017"
+      - "127.0.0.1:27018:27017"
     environment:
       MONGO_INITDB_DATABASE: qline
     volumes:
@@ -143,7 +144,7 @@ services:
     container_name: qline_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     command: >
       redis-server
       --save 60 1

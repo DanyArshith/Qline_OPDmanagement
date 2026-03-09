@@ -1,0 +1,19 @@
+services:
+  api:
+    environment:
+      NODE_ENV: production
+      RUN_WORKERS_IN_API: "false"
+      REQUIRE_REDIS_IN_PRODUCTION: "true"
+    restart: always
+
+  worker:
+    environment:
+      NODE_ENV: production
+      REQUIRE_REDIS_IN_PRODUCTION: "true"
+    restart: always
+
+  frontend:
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://api:5000}
+    restart: always

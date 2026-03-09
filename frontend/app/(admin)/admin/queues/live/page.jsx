@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import api from '@/lib/api'
 import { useToast } from '@/hooks/useToast'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
@@ -14,7 +14,7 @@ export default function AdminLiveQueuesPage() {
     const [loading, setLoading] = useState(true)
     const [lastUpdated, setLastUpdated] = useState(null)
 
-    const load = () => {
+    const load = useCallback(() => {
         api.get('/api/admin/queues/live')
             .then(r => {
                 setQueues(r.data?.queues ?? [])
@@ -22,13 +22,13 @@ export default function AdminLiveQueuesPage() {
             })
             .catch(() => toast.error('Failed to load live queues'))
             .finally(() => setLoading(false))
-    }
+    }, [toast])
 
     useEffect(() => {
         load()
         const interval = setInterval(load, 15000)
         return () => clearInterval(interval)
-    }, [])
+    }, [load])
 
     return (
         <div className="space-y-6">
@@ -75,7 +75,7 @@ export default function AdminLiveQueuesPage() {
                             {q.currentAppointment && (
                                 <div className="mt-3 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
                                     <p className="text-caption text-primary font-medium">👤 Currently Serving</p>
-                                    <p className="text-body text-text-primary">{q.currentAppointment?.patientName ?? 'Patient'}</p>
+                                    <p className="text-body text-text-primary">{q.currentAppointment?.patientName ?? `Token #${q.currentAppointment?.tokenNumber ?? '-'}`}</p>
                                 </div>
                             )}
                         </Card>
@@ -85,3 +85,4 @@ export default function AdminLiveQueuesPage() {
         </div>
     )
 }
+

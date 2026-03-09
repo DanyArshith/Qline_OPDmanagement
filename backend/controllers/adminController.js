@@ -3,11 +3,12 @@ const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const DailyQueue = require('../models/DailyQueue');
 const AuditLog = require('../models/AuditLog');
+const SystemSetting = require('../models/SystemSetting');
+const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
 
-// In-memory settings store (replace with DB model for production)
-let systemSettings = {
+const DEFAULT_SYSTEM_SETTINGS = {
     hospitalName: 'Qline Medical Center',
     supportEmail: 'support@qline.app',
     timezone: 'Asia/Kolkata',
@@ -21,6 +22,19 @@ let systemSettings = {
     ipWhitelist: [],
     emailProvider: 'smtp',
     notificationsEnabled: { appointmentBooked: true, appointmentReminder: true, queuePaused: true, doctorDelayed: true },
+};
+
+const getSystemSettings = async () => {
+    const doc = await SystemSetting.findOne({ key: 'system' }).lean();
+    if (!doc) return { ...DEFAULT_SYSTEM_SETTINGS };
+    return {
+        ...DEFAULT_SYSTEM_SETTINGS,
+        ...(doc.settings || {}),
+        notificationsEnabled: {
+            ...DEFAULT_SYSTEM_SETTINGS.notificationsEnabled,
+            ...((doc.settings || {}).notificationsEnabled || {}),
+        },
+    };
 };
 
 /**
@@ -124,6 +138,7 @@ exports.getUsers = asyncHandler(async (req, res) => {
 exports.updateUserStatus = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { status } = req.body; // 'active', 'suspended', etc.
+    const allowedStatuses = ['active', 'suspended'];
 
     const user = await User.findById(id).select('-password');
 
@@ -142,8 +157,19 @@ exports.updateUserStatus = asyncHandler(async (req, res) => {
         });
     }
 
-    // Add status field if it doesn't exist in schema
-    // For now, we'll just log the action
+    if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+            success: false,
+            error: `Status must be one of: ${allowedStatuses.join(', ')}`
+        });
+    }
+
+    user.status = status;
+    await user.save();
+
+    // Force re-login from all devices when status changes.
+    await RefreshToken.deleteMany({ userId: user._id });
+
     logger.info(`Admin ${req.user.userId} updated status of user ${id} to ${status}`);
 
     res.json({
@@ -378,10 +404,17 @@ exports.getLiveQueues = asyncHandler(async (req, res) => {
             department: q.doctorId?.department ?? '-',
         },
         status: q.status,
-        totalBooked: q.totalBooked ?? 0,
-        waitingCount: q.waitingCount ?? 0,
-        completedCount: q.completedCount ?? 0,
-        currentAppointment: q.currentAppointment ?? null,
+        totalBooked: q.appointmentCount ?? 0,
+        waitingCount: (q.waitingList || []).filter(item => item.status === 'waiting').length,
+        completedCount: (q.waitingList || []).filter(item => item.status === 'completed').length,
+        currentAppointment: (() => {
+            const inProgress = (q.waitingList || []).find(item => item.status === 'in_progress');
+            if (!inProgress) return null;
+            return {
+                appointmentId: inProgress.appointmentId,
+                tokenNumber: inProgress.tokenNumber
+            };
+        })(),
         date: q.date,
     }));
 
@@ -393,7 +426,8 @@ exports.getLiveQueues = asyncHandler(async (req, res) => {
  * GET /api/admin/settings
  */
 exports.getSettings = asyncHandler(async (req, res) => {
-    res.json({ success: true, settings: systemSettings });
+    const settings = await getSystemSettings();
+    res.json({ success: true, settings });
 });
 
 /**
@@ -401,7 +435,22 @@ exports.getSettings = asyncHandler(async (req, res) => {
  * PUT /api/admin/settings
  */
 exports.updateSettings = asyncHandler(async (req, res) => {
-    systemSettings = { ...systemSettings, ...req.body };
+    const current = await getSystemSettings();
+    const merged = {
+        ...current,
+        ...req.body,
+        notificationsEnabled: {
+            ...current.notificationsEnabled,
+            ...(req.body?.notificationsEnabled || {}),
+        },
+    };
+
+    await SystemSetting.findOneAndUpdate(
+        { key: 'system' },
+        { $set: { key: 'system', settings: merged } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
     logger.info(`Admin ${req.user.userId} updated system settings`);
-    res.json({ success: true, settings: systemSettings });
+    res.json({ success: true, settings: merged });
 });

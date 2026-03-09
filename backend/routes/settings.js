@@ -63,6 +63,13 @@ router.post(
 );
 
 router.post('/security/logout-all', settingsController.logoutAllSessions);
+router.post(
+    '/security/logout-session',
+    validate([
+        body('sessionId').isMongoId().withMessage('Valid sessionId is required'),
+    ]),
+    settingsController.logoutSession
+);
 router.get('/security/sessions', settingsController.getSecuritySessions);
 
 module.exports = router;

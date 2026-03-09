@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
@@ -27,16 +27,7 @@ export default function VerifyEmailPage() {
   const [error, setError] = useState('');
   const [resendCooldown, setResendCooldown] = useState(0);
 
-  useEffect(() => {
-    if (token) {
-      verifyToken();
-    } else {
-      setState('error');
-      setError('No verification token provided');
-    }
-  }, [token]);
-
-  const verifyToken = async () => {
+  const verifyToken = useCallback(async () => {
     try {
       await api.get('/api/auth/verify-email', { params: { token } });
 
@@ -48,7 +39,16 @@ export default function VerifyEmailPage() {
       setError(err?.response?.data?.message || 'Failed to verify email');
       setState('error');
     }
-  };
+  }, [router, token]);
+
+  useEffect(() => {
+    if (token) {
+      verifyToken();
+    } else {
+      setState('error');
+      setError('No verification token provided');
+    }
+  }, [token, verifyToken]);
 
   const handleResend = async () => {
     if (!email) {

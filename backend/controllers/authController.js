@@ -315,9 +315,31 @@ const forgotPassword = asyncHandler(async (req, res) => {
     user.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
     await user.save({ validateBeforeSave: false });
 
-    // TODO: Send email with reset link (implement email service)
-    // For now, log the token (in production, send via email)
-    console.log('Password reset link:', `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`);
+    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+    const html = `
+        <p>Hello ${user.name || 'User'},</p>
+        <p>We received a request to reset your password.</p>
+        <p><a href="${resetUrl}">Reset Password</a></p>
+        <p>This link expires in 15 minutes.</p>
+        <p>If you did not request this, you can safely ignore this email.</p>
+    `;
+
+    const text = `Reset your password: ${resetUrl} (expires in 15 minutes)`;
+
+    // Email delivery failures should not reveal account state to clients.
+    try {
+        await notificationService.sendEmail(
+            user.email,
+            'Reset your password - Qline',
+            html,
+            text,
+            { type: 'password_reset', userId: user._id.toString() }
+        );
+    } catch (error) {
+        console.warn('Failed to dispatch password reset email:', error.message);
+    }
 
     res.status(200).json({
         success: true,

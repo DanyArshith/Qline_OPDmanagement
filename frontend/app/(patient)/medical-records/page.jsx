@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 
@@ -21,12 +21,7 @@ export default function MedicalRecordsPage() {
   const [filterMonth, setFilterMonth] = useState('');
   const [doctors, setDoctors] = useState([]);
 
-  useEffect(() => {
-    fetchRecords();
-    fetchDoctors();
-  }, [filterDoctor, filterMonth]);
-
-  const fetchRecords = async () => {
+  const fetchRecords = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams();
@@ -42,16 +37,21 @@ export default function MedicalRecordsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filterDoctor, filterMonth]);
 
-  const fetchDoctors = async () => {
+  const fetchDoctors = useCallback(async () => {
     try {
       const res = await api.get('/api/patient/doctors');
       setDoctors(res.data?.doctors || []);
     } catch (err) {
       console.error('Failed to load doctors');
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchRecords();
+    fetchDoctors();
+  }, [fetchRecords, fetchDoctors]);
 
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString('en-US', {

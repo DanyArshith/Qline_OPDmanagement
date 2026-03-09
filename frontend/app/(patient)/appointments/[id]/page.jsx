@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import api from '@/lib/api';
@@ -28,11 +28,7 @@ export default function AppointmentDetailPage() {
   const [canceling, setCanceling] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
-  useEffect(() => {
-    fetchAppointment();
-  }, [params.id]);
-
-  const fetchAppointment = async () => {
+  const fetchAppointment = useCallback(async () => {
     try {
       setLoading(true);
       const res = await api.get(`/api/appointments/${params.id}`);
@@ -57,7 +53,11 @@ export default function AppointmentDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [params.id]);
+
+  useEffect(() => {
+    fetchAppointment();
+  }, [fetchAppointment]);
 
   const handleCancel = async () => {
     setCanceling(true);

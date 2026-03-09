@@ -148,6 +148,30 @@ exports.logoutAllSessions = asyncHandler(async (req, res) => {
     });
 });
 
+exports.logoutSession = asyncHandler(async (req, res) => {
+    const { sessionId } = req.body || {};
+
+    if (!sessionId) {
+        res.status(400);
+        throw new Error('sessionId is required');
+    }
+
+    const result = await RefreshToken.deleteOne({
+        _id: sessionId,
+        userId: req.user.userId,
+    });
+
+    if (result.deletedCount === 0) {
+        res.status(404);
+        throw new Error('Session not found');
+    }
+
+    res.json({
+        success: true,
+        message: 'Session signed out successfully',
+    });
+});
+
 exports.getSecuritySessions = asyncHandler(async (req, res) => {
     const sessions = await RefreshToken.find({ userId: req.user.userId })
         .sort({ updatedAt: -1 })

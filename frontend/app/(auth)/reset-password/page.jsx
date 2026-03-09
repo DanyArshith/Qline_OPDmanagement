@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
@@ -33,11 +33,7 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState('');
   const [passwordStrength, setPasswordStrength] = useState(0); // 0-4
 
-  useEffect(() => {
-    validateToken();
-  }, [token]);
-
-  const validateToken = async () => {
+  const validateToken = useCallback(async () => {
     if (!token) {
       setError('Invalid or missing reset token');
       setState('error');
@@ -52,7 +48,11 @@ export default function ResetPasswordPage() {
       setError(msg);
       setState('error');
     }
-  };
+  }, [token]);
+
+  useEffect(() => {
+    validateToken();
+  }, [validateToken]);
 
   const calculatePasswordStrength = (pwd) => {
     let strength = 0;

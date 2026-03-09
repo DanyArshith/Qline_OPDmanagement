@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 
@@ -22,11 +22,7 @@ export default function NotificationsPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [filterType, setFilterType] = useState('');
 
-  useEffect(() => {
-    fetchNotifications();
-  }, [page, filterType]);
-
-  const fetchNotifications = async () => {
+  const fetchNotifications = useCallback(async () => {
     try {
       setLoading(true);
       const r = await api.get('/api/notifications', { params: { page, limit: 20, ...(filterType && { type: filterType }) } });
@@ -38,7 +34,11 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filterType, page]);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
 
   const handleMarkAsRead = async (id) => {
     try {

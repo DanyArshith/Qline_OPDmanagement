@@ -75,7 +75,7 @@ jobs:
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-key-for-ci
         run: |
-          npm test 2>/dev/null || echo "ℹ️ No test suite configured yet — skipping"
+          npm test
 
   # ──────────────────────────────────────────────
   # Job 2: Build & Push Docker image (main only)
@@ -154,3 +154,4 @@ jobs:
           sleep 10  # Wait for health check start period
           curl -f "https://${{ secrets.STAGING_HOST }}/health" || \
             (echo "❌ Health check failed after deploy" && exit 1)
+

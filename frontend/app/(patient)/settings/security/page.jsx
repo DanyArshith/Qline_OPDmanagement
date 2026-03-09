@@ -11,10 +11,9 @@ import api from '@/lib/api';
  * - Change password
  * - View active sessions
  * - Logout all sessions
- * - 2FA placeholder (future)
  */
 export default function SecuritySettingsPage() {
-  const [activeTab, setActiveTab] = useState('password'); // password, sessions, 2fa
+  const [activeTab, setActiveTab] = useState('password'); // password, sessions
   const [passwordForm, setPasswordForm] = useState({
     currentPassword: '',
     newPassword: '',
@@ -84,6 +83,20 @@ export default function SecuritySettingsPage() {
       setMessage({ type: 'error', text: err?.response?.data?.message || err.message });
     } finally {
       setLoadingSessions(false);
+    }
+  };
+
+  const handleLogoutSession = async (sessionId) => {
+    setSaving(true);
+    try {
+      await api.post('/api/settings/security/logout-session', { sessionId });
+      setMessage({ type: 'success', text: 'Session signed out' });
+      await loadSessions();
+      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err?.response?.data?.message || err.message });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -227,7 +240,11 @@ export default function SecuritySettingsPage() {
                         </p>
                       </div>
                       {!session.current && (
-                        <button className="text-red-600 hover:text-red-700 font-medium text-sm">
+                        <button
+                          onClick={() => handleLogoutSession(session.id)}
+                          disabled={saving}
+                          className="text-red-600 hover:text-red-700 font-medium text-sm disabled:opacity-50"
+                        >
                           Sign Out
                         </button>
                       )}
