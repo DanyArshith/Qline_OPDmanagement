@@ -73,6 +73,7 @@ JWT_EXPIRY=15m
 
 JWT_REFRESH_SECRET=your_super_secret_refresh_key_here
 JWT_REFRESH_EXPIRY=7d
+REFRESH_COOKIE_NAME=qline_rt
 
 PORT=5000
 FRONTEND_URL=http://localhost:3000
@@ -123,7 +124,6 @@ Content-Type: application/json
 {
   "success": true,
   "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
     "id": "507f1f77bcf86cd799439011",
     "name": "John Doe",
@@ -132,6 +132,8 @@ Content-Type: application/json
   }
 }
 ```
+
+`refreshToken` is issued as an `httpOnly` cookie and not returned in response JSON.
 
 #### Login
 ```http
@@ -148,11 +150,9 @@ Content-Type: application/json
 ```http
 POST /api/auth/refresh
 Content-Type: application/json
-
-{
-  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
 ```
+
+No request body token is required when the refresh cookie is present.
 
 **Response:**
 ```json
@@ -166,11 +166,9 @@ Content-Type: application/json
 ```http
 POST /api/auth/logout
 Content-Type: application/json
-
-{
-  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
 ```
+
+Logout clears the `httpOnly` refresh cookie and invalidates the matching refresh token in storage.
 
 ### Health Check
 ```http

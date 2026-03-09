@@ -31,6 +31,7 @@
     "aws-sdk": "^2.1693.0",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.69.3",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
@@ -51,6 +52,7 @@
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.2",
+    "supertest": "^7.2.2"
   }
 }

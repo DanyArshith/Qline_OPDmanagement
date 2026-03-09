@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
 
 // Phase 4: Infrastructure imports
@@ -95,6 +96,7 @@ app.use(cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
 }));
+app.use(cookieParser());
 app.use(express.json()); // Body parser
 app.use(express.urlencoded({ extended: true }));
 

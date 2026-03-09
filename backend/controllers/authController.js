@@ -6,6 +6,36 @@ const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
 const notificationService = require('../services/notificationService');
 
+const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
+
+const getRefreshCookieOptions = (expiresAt = null) => {
+    const isProd = (process.env.NODE_ENV || 'development') === 'production';
+    return {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'strict' : 'lax',
+        path: '/',
+        ...(expiresAt ? { expires: expiresAt } : {}),
+    };
+};
+
+const clearRefreshCookie = (res) => {
+    res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOptions());
+};
+
+const setRefreshCookie = (res, refreshToken, expiresAt) => {
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, getRefreshCookieOptions(expiresAt));
+};
+
+const getRefreshExpiryDate = () => {
+    const refreshExpiry = new Date();
+    refreshExpiry.setDate(refreshExpiry.getDate() + 7); // 7 days
+    return refreshExpiry;
+};
+
+const getIncomingRefreshToken = (req) =>
+    req.cookies?.[REFRESH_COOKIE_NAME] || req.body?.refreshToken || '';
+
 /**
  * Generate access token
  */
@@ -85,8 +115,7 @@ const register = asyncHandler(async (req, res) => {
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
 
     // Calculate expiry date
-    const refreshExpiry = new Date();
-    refreshExpiry.setDate(refreshExpiry.getDate() + 7); // 7 days
+    const refreshExpiry = getRefreshExpiryDate();
 
     // Store hashed refresh token
     await RefreshToken.create({
@@ -97,10 +126,11 @@ const register = asyncHandler(async (req, res) => {
         ipAddress: req.ip || req.connection?.remoteAddress || '',
     });
 
+    setRefreshCookie(res, refreshToken, refreshExpiry);
+
     res.status(201).json({
         success: true,
         accessToken,
-        refreshToken,
         user: {
             id: user._id,
             name: user.name,
@@ -150,8 +180,7 @@ const login = asyncHandler(async (req, res) => {
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
 
     // Calculate expiry date
-    const refreshExpiry = new Date();
-    refreshExpiry.setDate(refreshExpiry.getDate() + 7); // 7 days
+    const refreshExpiry = getRefreshExpiryDate();
 
     // Delete old refresh tokens for this user
     await RefreshToken.deleteMany({ userId: user._id });
@@ -165,10 +194,11 @@ const login = asyncHandler(async (req, res) => {
         ipAddress: req.ip || req.connection?.remoteAddress || '',
     });
 
+    setRefreshCookie(res, refreshToken, refreshExpiry);
+
     res.status(200).json({
         success: true,
         accessToken,
-        refreshToken,
         user: {
             id: user._id,
             name: user.name,
@@ -187,7 +217,7 @@ const login = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const refresh = asyncHandler(async (req, res) => {
-    const { refreshToken } = req.body;
+    const refreshToken = getIncomingRefreshToken(req);
 
     if (!refreshToken) {
         res.status(401);
@@ -229,16 +259,53 @@ const refresh = asyncHandler(async (req, res) => {
     // Check if token is expired
     if (new Date() > validToken.expiresAt) {
         await RefreshToken.deleteOne({ _id: validToken._id });
+        clearRefreshCookie(res);
         res.status(401);
         throw new Error('Refresh token expired');
     }
 
+    const user = await User.findById(decoded.userId).select('name firstName lastName email role emailVerified status');
+    if (!user) {
+        await RefreshToken.deleteOne({ _id: validToken._id });
+        clearRefreshCookie(res);
+        res.status(401);
+        throw new Error('User not found');
+    }
+
+    if (user.status === 'suspended') {
+        clearRefreshCookie(res);
+        res.status(403);
+        throw new Error('Account is suspended');
+    }
+
+    // Rotate refresh token on each refresh for better session security.
+    const rotatedRefreshToken = generateRefreshToken(user._id, user.role);
+    const rotatedHash = await bcrypt.hash(rotatedRefreshToken, 10);
+    const refreshExpiry = getRefreshExpiryDate();
+
+    validToken.token = rotatedHash;
+    validToken.expiresAt = refreshExpiry;
+    validToken.userAgent = req.headers['user-agent'] || validToken.userAgent || '';
+    validToken.ipAddress = req.ip || req.connection?.remoteAddress || validToken.ipAddress || '';
+    await validToken.save();
+
+    setRefreshCookie(res, rotatedRefreshToken, refreshExpiry);
+
     // Generate new access token
-    const accessToken = generateAccessToken(decoded.userId, decoded.role);
+    const accessToken = generateAccessToken(user._id, user.role);
 
     res.status(200).json({
         success: true,
         accessToken,
+        user: {
+            id: user._id,
+            name: user.name,
+            firstName: user.firstName || '',
+            lastName: user.lastName || '',
+            email: user.email,
+            role: user.role,
+            emailVerified: user.emailVerified,
+        },
     });
 });
 
@@ -248,12 +315,7 @@ const refresh = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const logout = asyncHandler(async (req, res) => {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-        res.status(400);
-        throw new Error('Refresh token required');
-    }
+    const refreshToken = getIncomingRefreshToken(req);
 
     // Verify and decode token
     let decoded;
@@ -263,7 +325,7 @@ const logout = asyncHandler(async (req, res) => {
         // Token invalid or expired, but we'll still try to delete it
     }
 
-    if (decoded) {
+    if (decoded && refreshToken) {
         // Find and delete matching refresh tokens
         const storedTokens = await RefreshToken.find({ userId: decoded.userId });
 
@@ -275,6 +337,8 @@ const logout = asyncHandler(async (req, res) => {
             }
         }
     }
+
+    clearRefreshCookie(res);
 
     res.status(200).json({
         success: true,

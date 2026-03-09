@@ -25,16 +25,6 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      mongodb:
-        image: mongo:7.0
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval \"db.adminCommand('ping')\""
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
       redis:
         image: redis:7.2-alpine
         ports:
@@ -60,6 +50,19 @@ jobs:
         working-directory: backend
         run: npm ci --frozen-lockfile
 
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo-rs -p 27017:27017 mongo:7.0 --replSet rs0 --bind_ip_all
+          until docker exec mongo-rs mongosh --quiet --eval "db.adminCommand('ping').ok" | grep 1; do
+            echo "Waiting for MongoDB..."
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          until docker exec mongo-rs mongosh --quiet --eval "rs.status().ok" | grep 1; do
+            echo "Waiting for replica set initialization..."
+            sleep 2
+          done
+
       - name: Syntax check all JS files
         working-directory: backend
         run: |
@@ -71,9 +74,14 @@ jobs:
         working-directory: backend
         env:
           NODE_ENV: test
-          MONGO_URI: mongodb://localhost:27017/qline_test
+          MONGO_URI: mongodb://localhost:27017/qline_test?replicaSet=rs0
           REDIS_URL: redis://localhost:6379
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
           JWT_SECRET: test-secret-key-for-ci
+          JWT_REFRESH_SECRET: test-refresh-secret-key-for-ci
+          JWT_REFRESH_EXPIRY: 7d
+          ENABLE_INTEGRATION_TESTS: true
         run: |
           npm test
 

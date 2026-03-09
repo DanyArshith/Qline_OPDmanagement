@@ -23,14 +23,6 @@ const loginValidation = [
     body('password').notEmpty().withMessage('Password is required'),
 ];
 
-const refreshValidation = [
-    body('refreshToken').notEmpty().withMessage('Refresh token is required'),
-];
-
-const logoutValidation = [
-    body('refreshToken').notEmpty().withMessage('Refresh token is required'),
-];
-
 const forgotPasswordValidation = [
     body('email').isEmail().withMessage('Valid email is required'),
 ];
@@ -102,8 +94,6 @@ router.post(
  */
 router.post(
     '/refresh',
-    refreshValidation,
-    handleValidationErrors,
     asyncHandler(refresh)
 );
 
@@ -114,8 +104,6 @@ router.post(
  */
 router.post(
     '/logout',
-    logoutValidation,
-    handleValidationErrors,
     asyncHandler(logout)
 );
 

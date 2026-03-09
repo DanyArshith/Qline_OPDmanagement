@@ -2,6 +2,18 @@ const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
 
+const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
+
+const getRefreshCookieOptions = () => {
+    const isProd = (process.env.NODE_ENV || 'development') === 'production';
+    return {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'strict' : 'lax',
+        path: '/',
+    };
+};
+
 const deriveDevice = (userAgent = '') => {
     if (!userAgent) return 'Unknown device';
     if (userAgent.includes('Windows')) return 'Windows device';
@@ -142,6 +154,7 @@ exports.changePassword = asyncHandler(async (req, res) => {
 
 exports.logoutAllSessions = asyncHandler(async (req, res) => {
     await RefreshToken.deleteMany({ userId: req.user.userId });
+    res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOptions());
     res.json({
         success: true,
         message: 'Logged out from all devices',
