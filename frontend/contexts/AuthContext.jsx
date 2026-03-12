@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
+import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
 import { setAccessToken, clearAccessToken } from '@/lib/tokenStore'
 import { ROLE_DASHBOARDS } from '@/lib/utils'
 
@@ -18,7 +19,7 @@ const clearRoleCookie = () => {
     document.cookie = 'qline_role=; path=/; Max-Age=0'
 }
 
-const normalizeAuthData = (resData) => resData?.data ?? resData
+const normalizeAuthData = (input) => unwrapApiData(input)
 
 export function AuthProvider({ children }) {
     const [user, setUser] = useState(null)
@@ -37,7 +38,7 @@ export function AuthProvider({ children }) {
                 }
                 if (userData) {
                     setUser(userData)
-                    setRoleCookie(userData.role)
+                    if (userData.role) setRoleCookie(userData.role)
                 }
             } catch {
                 clearAccessToken()
@@ -56,7 +57,7 @@ export function AuthProvider({ children }) {
 
             setAccessToken(accessToken)
             setUser(userData)
-            setRoleCookie(userData.role)
+            if (userData?.role) setRoleCookie(userData.role)
 
             router.push(ROLE_DASHBOARDS[userData.role] || '/')
             return userData
@@ -77,8 +78,31 @@ export function AuthProvider({ children }) {
         }
     }, [router])
 
+    const updateUser = useCallback((nextUser) => {
+        if (!nextUser) return
+        setUser((prev) => ({ ...(prev || {}), ...nextUser }))
+        if (nextUser.role) setRoleCookie(nextUser.role)
+    }, [])
+
+    const refreshUser = useCallback(async () => {
+        try {
+            const res = await api.get('/api/profile')
+            const profilePayload = normalizeAuthData(res.data)
+            const userData = profilePayload?.user ?? profilePayload
+
+            if (userData) {
+                setUser(userData)
+                if (userData.role) setRoleCookie(userData.role)
+            }
+
+            return userData
+        } catch (error) {
+            throw new Error(normalizeApiError(error, 'Failed to refresh profile'))
+        }
+    }, [])
+
     return (
-        <AuthContext.Provider value={{ user, isLoading, login, logout }}>
+        <AuthContext.Provider value={{ user, isLoading, login, logout, updateUser, refreshUser }}>
             {children}
         </AuthContext.Provider>
     )

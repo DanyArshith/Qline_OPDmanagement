@@ -5,7 +5,7 @@ import { ToastProvider } from '@/contexts/ToastContext'
 import ToastContainer from '@/components/ui/Toast'
 
 export const metadata = {
-    title: 'Qline — OPD Queue Management',
+    title: 'Qline - OPD Queue Management',
     description: 'Digital OPD queue and appointment system for hospitals and clinics.',
 }
 

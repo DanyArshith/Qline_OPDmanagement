@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import { normalizeApiError, normalizePaginatedResponse } from '@/lib/apiClient'
 
 /**
  * Generic pagination hook.
@@ -21,13 +22,18 @@ export function usePagination(fetchFn, limit = 10) {
             setError(null)
             try {
                 const res = await fetchFn(p, limit)
-                const d = res?.data ?? res
-                setData(d.data ?? d.docs ?? d.results ?? [])
-                setTotal(d.total ?? 0)
-                setPages(d.pages ?? d.totalPages ?? Math.ceil((d.total ?? 0) / limit))
+                const parsed = normalizePaginatedResponse(res)
+                const computedPages =
+                    parsed.pages > 1
+                        ? parsed.pages
+                        : Math.max(1, Math.ceil((parsed.total || 0) / limit))
+
+                setData(parsed.items)
+                setTotal(parsed.total)
+                setPages(computedPages)
                 setPage(p)
             } catch (err) {
-                setError(err?.response?.data?.message || 'Failed to load data')
+                setError(normalizeApiError(err, 'Failed to load data'))
             } finally {
                 setLoading(false)
             }

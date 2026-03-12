@@ -2,7 +2,6 @@
 
 import { cn } from '@/lib/utils'
 
-/** Skeleton loading placeholder — no gradient, just a pulse animation */
 export default function Skeleton({ className = '', ...props }) {
     return (
         <div
@@ -13,12 +12,11 @@ export default function Skeleton({ className = '', ...props }) {
     )
 }
 
-/** Pre-built skeleton for a doctor card */
 export function DoctorCardSkeleton() {
     return (
-        <div className="bg-surface rounded-lg shadow-1 p-4 space-y-3">
-            <div className="flex gap-3 items-center">
-                <Skeleton className="w-12 h-12 rounded-full" />
+        <div className="space-y-3 rounded-lg bg-surface p-4 shadow-1">
+            <div className="flex items-center gap-3">
+                <Skeleton className="h-12 w-12 rounded-full" />
                 <div className="flex-1 space-y-2">
                     <Skeleton className="h-4 w-1/2" />
                     <Skeleton className="h-3 w-1/3" />
@@ -31,11 +29,10 @@ export function DoctorCardSkeleton() {
     )
 }
 
-/** Skeleton for an appointment row */
 export function AppointmentRowSkeleton() {
     return (
-        <div className="bg-surface rounded-lg shadow-1 p-4 flex items-center gap-4">
-            <Skeleton className="w-12 h-12 rounded-md" />
+        <div className="flex items-center gap-4 rounded-lg bg-surface p-4 shadow-1">
+            <Skeleton className="h-12 w-12 rounded-md" />
             <div className="flex-1 space-y-2">
                 <Skeleton className="h-4 w-1/3" />
                 <Skeleton className="h-3 w-1/4" />
@@ -45,12 +42,12 @@ export function AppointmentRowSkeleton() {
     )
 }
 
-/** Skeleton for stats cards */
 export function StatCardSkeleton() {
     return (
-        <div className="bg-surface rounded-lg shadow-1 p-4 space-y-2">
+        <div className="space-y-2 rounded-lg bg-surface p-4 shadow-1">
             <Skeleton className="h-3 w-1/3" />
             <Skeleton className="h-8 w-1/2" />
         </div>
     )
 }
+

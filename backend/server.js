@@ -303,13 +303,26 @@ Promise.all([
 
 // Start server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, async () => {
+server.listen(PORT, '0.0.0.0', async () => {
     logger.info(`🚀 Server running on port ${PORT}`);
     logger.info(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
     logger.info(`⏰ Cron jobs initialized`);
     
     // Verify data persistence
-    await verifyAndInitializeData();
+    try {
+        await verifyAndInitializeData();
+    } catch (error) {
+        logger.error('Error during data verification:', error);
+    }
+});
+
+// Add server error handler
+server.on('error', (err) => {
+    logger.error('Server error:', err);
+    if (err.code === 'EADDRINUSE') {
+        logger.error(`Port ${PORT} is already in use`);
+        process.exit(1);
+    }
 });
 
 // Graceful shutdown

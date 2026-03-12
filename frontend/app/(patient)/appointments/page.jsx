@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import api from '@/lib/api'
+import { normalizeApiError } from '@/lib/apiClient'
 import { formatDate, formatTime, PAGE_SIZE } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
 import { usePagination } from '@/hooks/usePagination'
@@ -12,8 +13,11 @@ import Card from '@/components/ui/Card'
 import Pagination from '@/components/ui/Pagination'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { AppointmentRowSkeleton } from '@/components/ui/Skeleton'
+import { EmptyState, ErrorState } from '@/components/ui/AsyncState'
 
 const SKELETONS = Array.from({ length: 5 })
+const TRACKABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
+const CANCELABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
 
 export default function AppointmentsPage() {
     const toast = useToast()
@@ -25,86 +29,108 @@ export default function AppointmentsPage() {
         []
     )
 
-    const { data: appointments, page, pages, loading, error, fetch, goToPage } =
-        usePagination(fetchAppointments, PAGE_SIZE)
+    const {
+        data: appointments,
+        page,
+        pages,
+        loading,
+        error,
+        fetch,
+        goToPage,
+    } = usePagination(fetchAppointments, PAGE_SIZE)
 
-    useEffect(() => { fetch(1) }, [fetch])
+    useEffect(() => {
+        fetch(1)
+    }, [fetch])
+
+    const appointmentsById = useMemo(
+        () => appointments.reduce((acc, item) => ({ ...acc, [item._id]: item }), {}),
+        [appointments]
+    )
 
     const handleCancel = async () => {
+        if (!cancelTarget) return
+
         setCancelLoading(true)
         try {
             await api.delete(`/api/appointments/${cancelTarget}/cancel`)
             toast.success('Appointment cancelled')
             setCancelTarget(null)
-            fetch(page) // refresh current page
+            fetch(page)
         } catch (err) {
-            toast.error(err?.response?.data?.message || 'Cancel failed')
+            toast.error(normalizeApiError(err, 'Cancellation failed'))
         } finally {
             setCancelLoading(false)
         }
     }
 
+    const selectedAppointment = cancelTarget ? appointmentsById[cancelTarget] : null
+
     return (
         <div className="space-y-6">
             <h1 className="text-h1 text-text-primary">My Appointments</h1>
 
-            {error && <p className="text-body text-error">{error}</p>}
+            {error && <ErrorState message={error} onRetry={() => fetch(page)} />}
 
             <div className="space-y-3">
                 {loading
                     ? SKELETONS.map((_, i) => <AppointmentRowSkeleton key={i} />)
-                    : appointments.map((appt) => (
-                        <Card key={appt._id} className="flex items-center gap-4">
-                            {/* Date block */}
-                            <div className="w-14 h-14 rounded-md bg-primary-soft flex flex-col items-center justify-center shrink-0">
-                                <span className="text-caption text-primary font-medium uppercase">
-                                    {formatDate(appt.date).split(' ')[0]}
+                    : appointments.map((appointment) => (
+                        <Card key={appointment._id} className="flex items-center gap-4">
+                            <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-md bg-primary-soft">
+                                <span className="text-caption font-medium uppercase text-primary">
+                                    {formatDate(appointment.date).split(' ')[0]}
                                 </span>
                                 <span className="text-h3 font-bold text-primary">
-                                    {formatDate(appt.date).split(' ')[1]?.replace(',', '')}
+                                    {formatDate(appointment.date).split(' ')[1]?.replace(',', '')}
                                 </span>
                             </div>
 
-                            {/* Info */}
-                            <div className="flex-1 min-w-0">
-                                <p className="text-body-lg font-semibold text-text-primary truncate">
-                                    Dr. {appt.doctorId?.name ?? '—'}
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-body-lg font-semibold text-text-primary">
+                                    Dr. {appointment.doctorId?.name || 'Unknown'}
                                 </p>
                                 <p className="text-body text-text-secondary">
-                                    {appt.doctorId?.department ?? '—'} · {formatTime(appt.slotStart)} · Token #{appt.tokenNumber}
+                                    {(appointment.doctorId?.department || 'General')} | {formatTime(appointment.slotStart)} | Token #{appointment.tokenNumber}
                                 </p>
                             </div>
 
-                            {/* Status + actions */}
-                            <div className="flex flex-col items-end gap-2 shrink-0">
-                                <Badge status={appt.status} />
-                                {appt.status === 'booked' && (
-                                    <div className="flex gap-2">
-                                        <Link href={`/queue/${appt._id}`}>
+                            <div className="shrink-0 space-y-2 text-right">
+                                <Badge status={appointment.status} />
+                                <div className="flex gap-2">
+                                    <Link href={`/appointments/${appointment._id}`}>
+                                        <Button variant="ghost" size="sm">View</Button>
+                                    </Link>
+                                    {TRACKABLE_STATUSES.has(appointment.status) && (
+                                        <Link href={`/queue/${appointment._id}`}>
                                             <Button variant="ghost" size="sm">Track</Button>
                                         </Link>
+                                    )}
+                                    {CANCELABLE_STATUSES.has(appointment.status) && (
                                         <Button
                                             variant="secondary"
                                             size="sm"
-                                            onClick={() => setCancelTarget(appt._id)}
+                                            onClick={() => setCancelTarget(appointment._id)}
                                         >
                                             Cancel
                                         </Button>
-                                    </div>
-                                )}
+                                    )}
+                                </div>
                             </div>
                         </Card>
                     ))}
             </div>
 
-            {/* Empty state */}
             {!loading && !error && appointments.length === 0 && (
-                <div className="text-center py-16 space-y-4">
-                    <p className="text-h3 text-text-secondary">No appointments yet</p>
-                    <Link href="/doctors">
-                        <Button>Book an appointment</Button>
-                    </Link>
-                </div>
+                <EmptyState
+                    title="No appointments yet"
+                    description="Book your first appointment to start your queue history."
+                    action={
+                        <Link href="/doctors">
+                            <Button>Book an appointment</Button>
+                        </Link>
+                    }
+                />
             )}
 
             <Pagination page={page} pages={pages} onPageChange={goToPage} loading={loading} />
@@ -113,11 +139,16 @@ export default function AppointmentsPage() {
                 isOpen={!!cancelTarget}
                 onClose={() => setCancelTarget(null)}
                 onConfirm={handleCancel}
-                title="Cancel Appointment"
-                message="Are you sure you want to cancel this appointment? This cannot be undone."
-                confirmLabel="Cancel Appointment"
+                title="Cancel appointment"
+                message={
+                    selectedAppointment
+                        ? `Cancel your appointment with Dr. ${selectedAppointment.doctorId?.name || 'Doctor'}?`
+                        : 'Are you sure you want to cancel this appointment?'
+                }
+                confirmLabel="Yes, cancel"
                 loading={cancelLoading}
             />
         </div>
     )
 }
+

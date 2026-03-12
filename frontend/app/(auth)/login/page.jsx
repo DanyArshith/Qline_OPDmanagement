@@ -30,7 +30,6 @@ export default function LoginPage() {
         setLoading(true)
         try {
             await login(form.email, form.password)
-            // redirect handled by AuthContext login()
         } catch (err) {
             const msg = err?.response?.data?.message || 'Invalid credentials'
             toast.error(msg)
@@ -40,11 +39,10 @@ export default function LoginPage() {
     }
 
     return (
-        <Card className="p-8 space-y-6">
-            {/* Brand */}
-            <div className="text-center space-y-1">
-                <h1 className="text-h1 text-primary font-semibold">Qline</h1>
-                <p className="text-body text-text-secondary">Sign in to your account</p>
+        <Card className="space-y-6 p-7 sm:p-8">
+            <div className="space-y-1 text-center">
+                <h1 className="text-h1 font-semibold text-primary">Welcome back</h1>
+                <p className="text-body text-text-secondary">Sign in to continue to your Qline workspace.</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4" noValidate>
@@ -58,19 +56,20 @@ export default function LoginPage() {
                     error={errors.email}
                     required
                 />
+
                 <div className="space-y-3">
                     <Input
                         label="Password"
                         type="password"
                         autoComplete="current-password"
-                        placeholder="••••••••"
+                        placeholder="Enter your password"
                         value={form.password}
                         onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))}
                         error={errors.password}
                         required
                     />
                     <div className="text-right">
-                        <Link href="/forgot-password" className="text-sm text-primary hover:underline">
+                        <Link href="/forgot-password" className="text-sm font-medium text-primary hover:underline">
                             Forgot password?
                         </Link>
                     </div>
@@ -82,8 +81,8 @@ export default function LoginPage() {
             </form>
 
             <p className="text-center text-body text-text-secondary">
-                Don&apos;t have an account?{' '}
-                <Link href="/register" className="text-primary font-medium hover:underline">
+                Do not have an account?{' '}
+                <Link href="/register" className="font-medium text-primary hover:underline">
                     Register
                 </Link>
             </p>

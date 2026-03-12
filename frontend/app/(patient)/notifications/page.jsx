@@ -1,216 +1,208 @@
-'use client';
+'use client'
 
-import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
-import api from '@/lib/api';
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import api from '@/lib/api'
+import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
+import Button from '@/components/ui/Button'
+import Card from '@/components/ui/Card'
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/AsyncState'
 
-/**
- * /notifications page
- * 
- * Functionality:
- * - Paginated notification center
- * - Mark as read functionality
- * - Mark all as read
- * - Delete functionality
- * - Filter by type (optional)
- */
+const TYPE_OPTIONS = [
+    { value: '', label: 'All Types' },
+    { value: 'appointment_booked', label: 'Appointment Booked' },
+    { value: 'appointment_reminder', label: 'Appointment Reminder' },
+    { value: 'token_called', label: 'Token Called' },
+    { value: 'doctor_delayed', label: 'Doctor Delayed' },
+    { value: 'system_alert', label: 'System Alert' },
+]
+
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [filterType, setFilterType] = useState('');
+    const [notifications, setNotifications] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState('')
+    const [page, setPage] = useState(1)
+    const [totalPages, setTotalPages] = useState(1)
+    const [filterType, setFilterType] = useState('')
 
-  const fetchNotifications = useCallback(async () => {
-    try {
-      setLoading(true);
-      const r = await api.get('/api/notifications', { params: { page, limit: 20, ...(filterType && { type: filterType }) } });
-      const data = r.data;
-      setNotifications(data.notifications ?? []);
-      setTotalPages(data.pagination?.pages ?? 1);
-    } catch (err) {
-      setError(err?.response?.data?.message || 'Failed to load notifications');
-    } finally {
-      setLoading(false);
+    const fetchNotifications = useCallback(async () => {
+        try {
+            setLoading(true)
+            setError('')
+
+            const res = await api.get('/api/notifications', {
+                params: {
+                    page,
+                    limit: 20,
+                    ...(filterType ? { type: filterType } : {}),
+                },
+            })
+
+            const payload = unwrapApiData(res)
+            const list = payload?.notifications ?? payload?.data?.notifications ?? payload?.data ?? []
+            const pagination = payload?.pagination ?? payload?.data?.pagination ?? {}
+
+            setNotifications(Array.isArray(list) ? list : [])
+            setTotalPages(pagination.pages || 1)
+        } catch (err) {
+            setError(normalizeApiError(err, 'Failed to load notifications'))
+        } finally {
+            setLoading(false)
+        }
+    }, [filterType, page])
+
+    useEffect(() => {
+        fetchNotifications()
+    }, [fetchNotifications])
+
+    const unreadCount = useMemo(
+        () => notifications.filter((notification) => !notification.read).length,
+        [notifications]
+    )
+
+    const handleMarkAsRead = async (id) => {
+        try {
+            await api.patch(`/api/notifications/${id}/read`)
+            setNotifications((prev) =>
+                prev.map((item) => (item._id === id ? { ...item, read: true } : item))
+            )
+        } catch (err) {
+            setError(normalizeApiError(err, 'Failed to update notification'))
+        }
     }
-  }, [filterType, page]);
 
-  useEffect(() => {
-    fetchNotifications();
-  }, [fetchNotifications]);
-
-  const handleMarkAsRead = async (id) => {
-    try {
-      await api.patch(`/api/notifications/${id}/read`);
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === id ? { ...n, read: true } : n))
-      );
-    } catch (err) {
-      setError('Failed to update notification');
+    const handleMarkAllAsRead = async () => {
+        try {
+            await api.patch('/api/notifications/read-all')
+            setNotifications((prev) => prev.map((item) => ({ ...item, read: true })))
+        } catch (err) {
+            setError(normalizeApiError(err, 'Failed to update notifications'))
+        }
     }
-  };
 
-  const handleMarkAllAsRead = async () => {
-    try {
-      await api.patch('/api/notifications/read-all');
-      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    } catch (err) {
-      setError('Failed to update notifications');
+    const handleDelete = async (id) => {
+        try {
+            await api.delete(`/api/notifications/${id}`)
+            setNotifications((prev) => prev.filter((item) => item._id !== id))
+        } catch (err) {
+            setError(normalizeApiError(err, 'Failed to delete notification'))
+        }
     }
-  };
 
-  const handleDelete = async (id) => {
-    try {
-      await api.delete(`/api/notifications/${id}`);
-      setNotifications((prev) => prev.filter((n) => n._id !== id));
-    } catch (err) {
-      setError('Failed to delete notification');
-    }
-  };
+    if (loading) return <LoadingState label="Loading notifications..." />
 
-
-  const getNotificationIcon = (type) => {
-    switch (type) {
-      case 'appointment_booked':
-        return '📅';
-      case 'appointment_reminder':
-        return '⏰';
-      case 'token_called':
-        return '📢';
-      case 'doctor_delayed':
-        return '⏳';
-      case 'system_alert':
-        return 'ℹ️';
-      default:
-        return '🔔';
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-4xl mx-auto space-y-8">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Notifications</h1>
-            <p className="text-gray-600 mt-2">
-              {notifications.filter((n) => !n.read).length} unread
-            </p>
-          </div>
-          {notifications.filter((n) => !n.read).length > 0 && (
-            <button
-              onClick={handleMarkAllAsRead}
-              className="py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-            >
-              Mark All as Read
-            </button>
-          )}
-        </div>
-
-        {/* Filter */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <select
-            value={filterType}
-            onChange={(e) => {
-              setFilterType(e.target.value);
-              setPage(1);
-            }}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value="">All Types</option>
-            <option value="appointment_booked">Appointment Booked</option>
-            <option value="appointment_reminder">Appointment Reminder</option>
-            <option value="token_called">Token Called</option>
-            <option value="doctor_delayed">Doctor Delayed</option>
-            <option value="system_alert">System Alert</option>
-          </select>
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="rounded-lg bg-red-50 p-4 border border-red-200">
-            <p className="text-red-700">{error}</p>
-          </div>
-        )}
-
-        {/* Notifications List */}
-        {loading ? (
-          <div className="flex justify-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          </div>
-        ) : notifications.length === 0 ? (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
-            <p className="text-gray-600">No notifications</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {notifications.map((notif) => (
-              <div
-                key={notif._id}
-                className={`rounded-lg border p-4 flex gap-4 transition ${notif.read
-                    ? 'bg-white border-gray-200'
-                    : 'bg-blue-50 border-blue-200'
-                  }`}
-              >
-                <div className="text-2xl pt-1">
-                  {getNotificationIcon(notif.type)}
+    return (
+        <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <h1 className="text-h1 text-text-primary">Notifications</h1>
+                    <p className="text-body text-text-secondary">{unreadCount} unread</p>
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-gray-900">
-                    {notif.title}
-                  </h3>
-                  <p className="text-sm text-gray-600 mt-1">
-                    {notif.message}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-2">
-                    {new Date(notif.createdAt).toLocaleString()}
-                  </p>
+                {unreadCount > 0 && (
+                    <Button variant="secondary" onClick={handleMarkAllAsRead}>
+                        Mark all as read
+                    </Button>
+                )}
+            </div>
+
+            <Card className="p-4">
+                <label htmlFor="notification-filter" className="mb-1 block text-caption text-text-secondary">
+                    Filter by type
+                </label>
+                <select
+                    id="notification-filter"
+                    value={filterType}
+                    onChange={(e) => {
+                        setPage(1)
+                        setFilterType(e.target.value)
+                    }}
+                    className="h-11 rounded-md border border-border bg-surface px-3 text-body text-text-primary outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/10"
+                >
+                    {TYPE_OPTIONS.map((option) => (
+                        <option key={option.value || 'all'} value={option.value}>
+                            {option.label}
+                        </option>
+                    ))}
+                </select>
+            </Card>
+
+            {error && <ErrorState message={error} onRetry={fetchNotifications} />}
+
+            {!error && notifications.length === 0 && (
+                <EmptyState
+                    title="No notifications"
+                    description="New alerts will appear here when appointments or queue updates happen."
+                />
+            )}
+
+            {!error && notifications.length > 0 && (
+                <div className="space-y-3">
+                    {notifications.map((notification) => (
+                        <Card
+                            key={notification._id}
+                            className={`flex gap-4 p-4 ${
+                                notification.read ? 'border-border' : 'border-primary/40 bg-primary-soft/40'
+                            }`}
+                        >
+                            <div className="mt-1 h-2.5 w-2.5 rounded-full bg-primary" />
+                            <div className="flex-1">
+                                <h2 className="text-body font-semibold text-text-primary">
+                                    {notification.title}
+                                </h2>
+                                <p className="mt-1 text-body text-text-secondary">
+                                    {notification.message}
+                                </p>
+                                <p className="mt-2 text-caption text-text-secondary">
+                                    {new Date(notification.createdAt).toLocaleString()}
+                                </p>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                {!notification.read && (
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleMarkAsRead(notification._id)}
+                                    >
+                                        Mark read
+                                    </Button>
+                                )}
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-error hover:text-error"
+                                    onClick={() => handleDelete(notification._id)}
+                                >
+                                    Delete
+                                </Button>
+                            </div>
+                        </Card>
+                    ))}
                 </div>
-                <div className="flex items-start gap-2">
-                  {!notif.read && (
-                    <button
-                      onClick={() => handleMarkAsRead(notif._id)}
-                      className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+            )}
+
+            {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-2">
+                    <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={page === 1}
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
                     >
-                      Mark Read
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleDelete(notif._id)}
-                    className="text-red-600 hover:text-red-700 text-sm font-medium"
-                  >
-                    Delete
-                  </button>
+                        Previous
+                    </Button>
+                    <span className="text-body text-text-secondary">
+                        Page {page} of {totalPages}
+                    </span>
+                    <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={page === totalPages}
+                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    >
+                        Next
+                    </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex justify-center gap-2">
-            <button
-              onClick={() => setPage(Math.max(1, page - 1))}
-              disabled={page === 1}
-              className="py-2 px-4 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 font-medium"
-            >
-              Previous
-            </button>
-            <span className="py-2 px-4 text-gray-600">
-              Page {page} of {totalPages}
-            </span>
-            <button
-              onClick={() => setPage(Math.min(totalPages, page + 1))}
-              disabled={page === totalPages}
-              className="py-2 px-4 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 font-medium"
-            >
-              Next
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+            )}
+        </div>
+    )
 }
+

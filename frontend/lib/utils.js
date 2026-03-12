@@ -7,7 +7,7 @@ export const formatTime = (date) =>
     date ? format(new Date(date), 'h:mm a') : ''
 
 export const formatDateTime = (date) =>
-    date ? format(new Date(date), 'MMM d, yyyy • h:mm a') : ''
+    date ? format(new Date(date), 'MMM d, yyyy - h:mm a') : ''
 
 export const timeAgo = (date) =>
     date ? formatDistanceToNow(new Date(date), { addSuffix: true }) : ''
@@ -17,7 +17,6 @@ export const getInitials = (name = '') =>
 
 export const cn = (...classes) => classes.filter(Boolean).join(' ')
 
-// ─── Status config ───────────────────────────────────────────────────────────
 export const STATUS_CONFIG = {
     booked: { label: 'Booked', bg: 'bg-info/10', text: 'text-info' },
     waiting: { label: 'Waiting', bg: 'bg-info/10', text: 'text-info' },
@@ -35,7 +34,6 @@ export const STATUS_CONFIG = {
 export const getStatusConfig = (status) =>
     STATUS_CONFIG[status] || { label: status, bg: 'bg-border', text: 'text-text-secondary' }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
 export const PAGE_SIZE = 10
 
 export const DEPARTMENTS = [
@@ -45,7 +43,7 @@ export const DEPARTMENTS = [
 ]
 
 export const ROLE_DASHBOARDS = {
-    patient: '/doctors',
+    patient: '/patient/dashboard',
     doctor: '/doctor/dashboard',
     admin: '/admin/dashboard',
 }

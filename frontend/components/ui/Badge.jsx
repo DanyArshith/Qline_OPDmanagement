@@ -9,9 +9,10 @@ export default function Badge({ status, label, className = '' }) {
     return (
         <span
             className={cn(
-                'inline-flex items-center px-3 py-1 rounded-pill text-caption font-medium',
+                'inline-flex items-center rounded-pill border px-3 py-1 text-caption font-semibold uppercase tracking-[0.02em]',
                 config.bg,
                 config.text,
+                'border-current/15',
                 className
             )}
         >

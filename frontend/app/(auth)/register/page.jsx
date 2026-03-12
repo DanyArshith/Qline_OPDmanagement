@@ -11,8 +11,8 @@ import Input from '@/components/ui/Input'
 import Card from '@/components/ui/Card'
 
 const ROLES = [
-    { value: 'patient', label: 'Patient', icon: '🏥' },
-    { value: 'doctor', label: 'Doctor', icon: '👨‍⚕️' },
+    { value: 'patient', label: 'Patient', chip: 'PT' },
+    { value: 'doctor', label: 'Doctor', chip: 'DR' },
 ]
 
 export default function RegisterPage() {
@@ -38,7 +38,7 @@ export default function RegisterPage() {
         setLoading(true)
         try {
             await api.post('/api/auth/register', form)
-            toast.success('Account created! Please sign in.')
+            toast.success('Account created. Please sign in.')
             router.push('/login')
         } catch (err) {
             toast.error(err?.response?.data?.message || 'Registration failed')
@@ -48,28 +48,26 @@ export default function RegisterPage() {
     }
 
     return (
-        <Card className="p-8 space-y-6">
-            <div className="text-center space-y-1">
-                <h1 className="text-h1 text-primary font-semibold">Qline</h1>
-                <p className="text-body text-text-secondary">Create your account</p>
+        <Card className="space-y-6 p-7 sm:p-8">
+            <div className="space-y-1 text-center">
+                <h1 className="text-h1 font-semibold text-primary">Create account</h1>
+                <p className="text-body text-text-secondary">Set up your Qline access in under a minute.</p>
             </div>
 
-            {/* Role selector */}
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
                 {ROLES.map((r) => (
                     <button
                         key={r.value}
                         type="button"
                         onClick={() => setForm((p) => ({ ...p, role: r.value }))}
                         className={cn(
-                            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-md border text-body font-medium',
-                            'transition-colors duration-200',
+                            'flex items-center justify-center gap-2 rounded-lg border py-2.5 text-body font-medium transition-colors duration-200',
                             form.role === r.value
                                 ? 'border-primary bg-primary-soft text-primary'
-                                : 'border-border text-text-secondary hover:border-primary'
+                                : 'border-border text-text-secondary hover:border-primary/50'
                         )}
                     >
-                        <span>{r.icon}</span>
+                        <span className="rounded bg-surface px-1.5 py-0.5 text-caption font-semibold">{r.chip}</span>
                         {r.label}
                     </button>
                 ))}
@@ -114,7 +112,7 @@ export default function RegisterPage() {
 
             <p className="text-center text-body text-text-secondary">
                 Already have an account?{' '}
-                <Link href="/login" className="text-primary font-medium hover:underline">
+                <Link href="/login" className="font-medium text-primary hover:underline">
                     Sign in
                 </Link>
             </p>

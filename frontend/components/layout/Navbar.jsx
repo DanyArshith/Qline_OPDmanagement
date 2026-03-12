@@ -41,24 +41,22 @@ export default function Navbar() {
     const links = NAV_LINKS[user?.role] || []
 
     return (
-        <header className="sticky top-0 z-40 bg-surface border-b border-border shadow-1">
-            <div className="max-w-[1200px] mx-auto px-4 h-16 flex items-center justify-between gap-4">
-                {/* Brand */}
-                <Link href="/" className="text-h3 font-semibold text-primary tracking-tight">
+        <header className="sticky top-0 z-40 border-b border-border/80 bg-surface/90 backdrop-blur-sm shadow-1">
+            <div className="mx-auto flex h-16 max-w-[1200px] items-center justify-between gap-3 px-4">
+                <Link href="/" className="text-h3 font-semibold tracking-tight text-primary">
                     Qline
                 </Link>
 
-                {/* Nav links */}
                 <nav className="hidden md:flex items-center gap-1">
                     {links.map(({ href, label }) => (
                         <Link
                             key={href}
                             href={href}
                             className={cn(
-                                'px-4 py-2 rounded-sm text-body font-medium transition-colors duration-200',
+                                'rounded-lg px-3 py-2 text-body font-medium transition-colors duration-200',
                                 pathname.startsWith(href)
                                     ? 'bg-primary-soft text-primary'
-                                    : 'text-text-secondary hover:text-text-primary hover:bg-border'
+                                    : 'text-text-secondary hover:bg-primary-soft hover:text-text-primary'
                             )}
                         >
                             {label}
@@ -66,13 +64,12 @@ export default function Navbar() {
                     ))}
                 </nav>
 
-                {/* User + logout */}
                 <div className="flex items-center gap-3">
                     <div className="hidden sm:flex items-center gap-2">
-                        <span className="w-8 h-8 rounded-full bg-primary-soft text-primary text-caption font-semibold flex items-center justify-center">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-soft text-caption font-semibold text-primary">
                             {getInitials(user?.name)}
                         </span>
-                        <span className="text-body text-text-primary font-medium hidden lg:block">
+                        <span className="hidden text-body font-medium text-text-primary lg:block">
                             {user?.name}
                         </span>
                     </div>
@@ -81,6 +78,25 @@ export default function Navbar() {
                     </Button>
                 </div>
             </div>
+
+            <nav className="md:hidden border-t border-border/70 bg-surface/90 px-2 py-2">
+                <div className="no-scrollbar flex gap-1 overflow-x-auto">
+                    {links.map(({ href, label }) => (
+                        <Link
+                            key={href}
+                            href={href}
+                            className={cn(
+                                'whitespace-nowrap rounded-lg px-3 py-1.5 text-caption font-medium transition-colors',
+                                pathname.startsWith(href)
+                                    ? 'bg-primary-soft text-primary'
+                                    : 'text-text-secondary hover:bg-primary-soft hover:text-text-primary'
+                            )}
+                        >
+                            {label}
+                        </Link>
+                    ))}
+                </div>
+            </nav>
         </header>
     )
 }

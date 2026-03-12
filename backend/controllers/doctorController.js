@@ -1,10 +1,12 @@
 const Doctor = require('../models/Doctor');
+const Appointment = require('../models/Appointment');
 const asyncHandler = require('../utils/asyncHandler');
 const { validateTimeFormat, validateBreakSlots } = require('../utils/dateUtils');
 const { generateSlots } = require('../services/slotService');
 const User = require('../models/User');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
+const { getAverageWaitTimeByHour } = require('../services/estimationService');
 
 /**
  * @desc    Configure doctor's schedule (working hours, breaks, consultation time, max patients)
@@ -228,12 +230,67 @@ const searchDoctors = asyncHandler(async (req, res) => {
 
     const pages = Math.ceil(total / limitNum);
 
-    // Add `user` alias for consistency with getDoctorById response shape
-    const doctorsWithUser = doctors.map((d) => ({ ...d, user: d.userId }));
+    // Calculate waiting times for each doctor
+    const doctorsWithDetails = await Promise.all(
+        doctors.map(async (d) => {
+            // Get today's appointments for this doctor
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            // Count current waiting patients
+            const waitingCount = await Appointment.countDocuments({
+                doctorId: d._id,
+                date: { $gte: today, $lt: tomorrow },
+                status: { $in: ['waiting', 'booked'] }
+            });
+
+            // Calculate average waiting time
+            // Get completed appointments from last 30 days and calculate average
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+            const completedAppointments = await Appointment.countDocuments({
+                doctorId: d._id,
+                status: 'completed',
+                createdAt: { $gte: thirtyDaysAgo }
+            });
+
+            // Average based on doctor's consultation time and historical data
+            // Formula: avgConsultTime * (waitingCount + 1) to estimate total wait
+            let estimatedWaitTime = d.defaultConsultTime * (waitingCount + 1);
+            
+            // Cap at 120 minutes max estimate
+            estimatedWaitTime = Math.min(estimatedWaitTime, 120);
+
+            // Get current hour for more accurate estimation
+            const currentHour = new Date().getHours();
+            try {
+                const hourlyWaitTime = await getAverageWaitTimeByHour(d._id, currentHour);
+                if (hourlyWaitTime) {
+                    estimatedWaitTime = Math.min(estimatedWaitTime, hourlyWaitTime + d.defaultConsultTime * (waitingCount + 1));
+                }
+            } catch (err) {
+                logger.debug('Could not get hourly wait time:', err.message);
+            }
+
+            return {
+                ...d,
+                user: d.userId,
+                waitingTime: {
+                    estimatedWaitMinutes: Math.round(estimatedWaitTime),
+                    patientsInQueue: waitingCount,
+                    averageConsultationTime: d.defaultConsultTime,
+                    description: `${Math.round(estimatedWaitTime)} min wait • ${waitingCount} in queue`
+                }
+            };
+        })
+    );
 
     res.status(200).json({
         success: true,
-        data: doctorsWithUser,
+        data: doctorsWithDetails,
         total,
         page: pageNum,
         pages,
@@ -255,10 +312,33 @@ const getDoctorById = asyncHandler(async (req, res) => {
         throw new Error('Doctor not found');
     }
 
+    // Calculate waiting time for this doctor
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const waitingCount = await Appointment.countDocuments({
+        doctorId: doctor._id,
+        date: { $gte: today, $lt: tomorrow },
+        status: { $in: ['waiting', 'booked'] }
+    });
+
+    const estimatedWaitTime = Math.min(doctor.defaultConsultTime * (waitingCount + 1), 120);
+
     // Expose a convenience `user` field matching frontend expectation
     res.status(200).json({
         success: true,
-        data: { ...doctor, user: doctor.userId },
+        data: {
+            ...doctor,
+            user: doctor.userId,
+            waitingTime: {
+                estimatedWaitMinutes: Math.round(estimatedWaitTime),
+                patientsInQueue: waitingCount,
+                averageConsultationTime: doctor.defaultConsultTime,
+                description: `${Math.round(estimatedWaitTime)} min wait • ${waitingCount} in queue`
+            }
+        },
     });
 });
 

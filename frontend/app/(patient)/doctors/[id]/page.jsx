@@ -1,215 +1,195 @@
-'use client';
+'use client'
 
-import { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'next/navigation';
-import Link from 'next/link';
-import api from '@/lib/api';
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { addDays, format, startOfDay } from 'date-fns'
+import { useParams } from 'next/navigation'
+import api from '@/lib/api'
+import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
+import { formatTime } from '@/lib/utils'
+import Button from '@/components/ui/Button'
+import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
+import { ErrorState, LoadingState } from '@/components/ui/AsyncState'
 
-/**
- * /doctors/[id] page
- * 
- * Functionality:
- * - Full doctor profile display
- * - Department and specialization
- * - Working hours and consultation duration
- * - Next available dates
- * - Book appointment CTA
- * - Patient reviews/ratings (optional)
- * 
- * API: GET /api/doctors/{id}
- */
-export default function DoctorDetailPage() {
-  const params = useParams();
-  const [doctor, setDoctor] = useState(null);
-  const [availability, setAvailability] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+const LOOKAHEAD_DAYS = 7
 
-  const fetchDoctorDetail = useCallback(async () => {
-    try {
-      setLoading(true);
-      const res = await api.get(`/api/doctors/${params.id}`);
-      const payload = res.data?.data ?? res.data?.doctor ?? res.data;
-      const doctorData = payload?.data ?? payload;
-      const normalized = {
-        ...doctorData,
-        name: doctorData?.user?.name ?? doctorData?.userId?.name ?? doctorData?.name,
-        specialization: doctorData?.specialization ?? doctorData?.department ?? '',
-        consultationDurationMinutes: doctorData?.consultationDurationMinutes ?? doctorData?.defaultConsultTime ?? null,
-        yearsOfExperience: doctorData?.yearsOfExperience ?? doctorData?.experience ?? null,
-      };
-      setDoctor(normalized);
-      setAvailability(res.data?.nextAvailableDates || []);
-      setError('');
-    } catch (err) {
-      setError(err?.response?.data?.message || err.message || 'Failed to load doctor details');
-    } finally {
-      setLoading(false);
-    }
-  }, [params.id]);
-
-  useEffect(() => {
-    fetchDoctorDetail();
-  }, [fetchDoctorDetail]);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  if (error || !doctor) {
-    return (
-      <div className="min-h-screen bg-gray-50 py-12 px-4">
-        <div className="max-w-2xl mx-auto">
-          <div className="rounded-lg bg-red-50 p-4 border border-red-200">
-            <p className="text-red-700">{error || 'Doctor not found'}</p>
-          </div>
-          <Link href="/doctors" className="block mt-4 text-blue-600 hover:text-blue-700">
-            ← Back to Doctors
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-4xl mx-auto space-y-8">
-        {/* Back Link */}
-        <Link href="/doctors" className="text-blue-600 hover:text-blue-700 font-medium">
-          ← Back to Doctors
-        </Link>
-
-        {/* Doctor Header */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-          <div className="flex flex-col sm:flex-row gap-8">
-            {/* Profile Image */}
-            <div className="flex-shrink-0">
-              <div className="h-32 w-32 bg-gray-200 rounded-lg flex items-center justify-center text-4xl">
-                👨‍⚕️
-              </div>
-            </div>
-
-            {/* Doctor Info */}
-            <div className="flex-1 space-y-4">
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">
-                  Dr. {doctor.name}
-                </h1>
-                <p className="text-lg text-gray-600 mt-1">
-                  {doctor.specialization}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-gray-600">Department</p>
-                  <p className="font-semibold text-gray-900">{doctor.department}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Experience</p>
-                  <p className="font-semibold text-gray-900">
-                    {doctor.yearsOfExperience} years
-                  </p>
-                </div>
-              </div>
-
-              {doctor.rating && (
-                <div className="flex items-center space-x-2">
-                  <span className="text-yellow-500">★★★★★</span>
-                  <span className="text-gray-600">
-                    {doctor.rating.toFixed(1)} ({doctor.reviewCount} reviews)
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Key Details */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <p className="text-sm text-gray-600">Consultation Duration</p>
-            <p className="text-2xl font-bold text-gray-900 mt-2">
-              {doctor.consultationDurationMinutes} min
-            </p>
-          </div>
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <p className="text-sm text-gray-600">Availability</p>
-            <p className="text-2xl font-bold text-gray-900 mt-2">
-              {doctor.availableToday ? 'Today' : 'Upcoming'}
-            </p>
-          </div>
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <p className="text-sm text-gray-600">Booking Status</p>
-            <p className="text-2xl font-bold text-green-600 mt-2">
-              Open
-            </p>
-          </div>
-        </div>
-
-        {/* Bio */}
-        {doctor.bio && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">About</h2>
-            <p className="text-gray-600 leading-relaxed">{doctor.bio}</p>
-          </div>
-        )}
-
-        {/* Working Hours */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Working Hours</h2>
-          <div className="space-y-2">
-            {doctor.workingHours && Object.entries(doctor.workingHours).map(([day, hours]) => (
-              <div key={day} className="flex justify-between">
-                <span className="text-gray-600 capitalize">{day}</span>
-                <span className="font-medium text-gray-900">
-                  {hours.start} - {hours.end}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Next Available Dates */}
-        {availability.length > 0 && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Next Available Slots</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {availability.slice(0, 4).map((slot) => (
-                <Link
-                  key={slot.id}
-                  href={`/doctors/${params.id}/book?date=${slot.date}&time=${slot.time}`}
-                  className="p-4 border border-gray-200 rounded-lg hover:bg-blue-50 transition text-center"
-                >
-                  <p className="font-medium text-gray-900">
-                    {new Date(slot.date).toLocaleDateString('en-US', {
-                      weekday: 'short',
-                      month: 'short',
-                      day: 'numeric',
-                    })}
-                  </p>
-                  <p className="text-sm text-gray-600 mt-1">{slot.time}</p>
-                </Link>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* CTA Button */}
-        <div className="bg-blue-50 rounded-lg border border-blue-200 p-6 text-center">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Ready to Book?</h2>
-          <Link
-            href={`/doctors/${params.id}/book`}
-            className="inline-block py-3 px-8 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold"
-          >
-            Book Appointment
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
+function upcomingDates() {
+    const today = startOfDay(new Date())
+    return Array.from({ length: LOOKAHEAD_DAYS }, (_, i) => addDays(today, i))
 }
+
+export default function DoctorDetailPage() {
+    const params = useParams()
+    const doctorId = params.id
+
+    const [doctor, setDoctor] = useState(null)
+    const [slotsByDay, setSlotsByDay] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState('')
+
+    const dates = useMemo(() => upcomingDates(), [])
+
+    const fetchDoctorDetail = useCallback(async () => {
+        try {
+            setLoading(true)
+            setError('')
+
+            const doctorRes = await api.get(`/api/doctors/${doctorId}`)
+            const raw = unwrapApiData(doctorRes)
+            const profile = raw?.data ?? raw
+
+            if (!profile?._id) {
+                throw new Error('Doctor profile not found')
+            }
+
+            setDoctor({
+                ...profile,
+                name: profile?.user?.name ?? profile?.userId?.name ?? 'Doctor',
+                specialization: profile?.specialization || profile?.department || 'General',
+            })
+
+            const slotResults = await Promise.all(
+                dates.map(async (day) => {
+                    const dateValue = format(day, 'yyyy-MM-dd')
+                    try {
+                        const slotRes = await api.get(`/api/doctors/${doctorId}/slots`, {
+                            params: { date: dateValue },
+                        })
+                        const payload = unwrapApiData(slotRes)
+                        const slots = payload?.slots ?? payload?.data ?? []
+                        return { date: dateValue, slots: Array.isArray(slots) ? slots : [] }
+                    } catch {
+                        return { date: dateValue, slots: [] }
+                    }
+                })
+            )
+
+            setSlotsByDay(slotResults)
+        } catch (err) {
+            setError(normalizeApiError(err, 'Failed to load doctor details'))
+        } finally {
+            setLoading(false)
+        }
+    }, [dates, doctorId])
+
+    useEffect(() => {
+        fetchDoctorDetail()
+    }, [fetchDoctorDetail])
+
+    if (loading) return <LoadingState label="Loading doctor profile..." />
+    if (error || !doctor) {
+        return (
+            <div className="space-y-4">
+                <Link href="/doctors" className="text-body text-primary hover:underline">
+                    Back to doctors
+                </Link>
+                <ErrorState message={error || 'Doctor not found'} onRetry={fetchDoctorDetail} />
+            </div>
+        )
+    }
+
+    const hasAnySlots = slotsByDay.some((row) => row.slots.length > 0)
+
+    return (
+        <div className="space-y-6">
+            <Link href="/doctors" className="text-body text-primary hover:underline">
+                Back to doctors
+            </Link>
+
+            <Card className="space-y-5 p-6">
+                <div>
+                    <h1 className="text-h1 text-text-primary">Dr. {doctor.name}</h1>
+                    <p className="text-body text-text-secondary">{doctor.specialization}</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="rounded-lg border border-border bg-bg p-4">
+                        <p className="text-caption text-text-secondary">Department</p>
+                        <p className="text-body font-semibold text-text-primary">{doctor.department || 'Not set'}</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-bg p-4">
+                        <p className="text-caption text-text-secondary">Consultation Duration</p>
+                        <p className="text-body font-semibold text-text-primary">
+                            {doctor.defaultConsultTime || 15} min
+                        </p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-bg p-4">
+                        <p className="text-caption text-text-secondary">Working Hours</p>
+                        <p className="text-body font-semibold text-text-primary">
+                            {doctor.workingHours?.start || '--:--'} to {doctor.workingHours?.end || '--:--'}
+                        </p>
+                    </div>
+                </div>
+
+                {doctor.waitingTime && (
+                    <div className="rounded-lg border-2 border-warning/30 bg-warning/5 p-4">
+                        <h3 className="mb-3 text-body font-semibold text-text-primary">Current Queue Status</h3>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div className="flex flex-col">
+                                <span className="text-caption text-text-secondary">Estimated Wait Time</span>
+                                <span className="text-body-lg font-bold text-warning">{doctor.waitingTime.estimatedWaitMinutes} minutes</span>
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-caption text-text-secondary">Patients in Queue</span>
+                                <span className="text-body-lg font-bold text-primary">{doctor.waitingTime.patientsInQueue} patient{doctor.waitingTime.patientsInQueue !== 1 ? 's' : ''}</span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {doctor.bio && (
+                    <div>
+                        <h2 className="mb-2 text-h3 text-text-primary">About</h2>
+                        <p className="text-body text-text-secondary">{doctor.bio}</p>
+                    </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                    <Link href={`/doctors/${doctor._id}/book`}>
+                        <Button>Book Appointment</Button>
+                    </Link>
+                    <span className="text-caption text-text-secondary">
+                        Reviews, favorites, and payments are deferred in this MVP.
+                    </span>
+                </div>
+            </Card>
+
+            <Card className="p-6">
+                <CardHeader>
+                    <CardTitle>Next 7 days availability</CardTitle>
+                </CardHeader>
+
+                {!hasAnySlots ? (
+                    <p className="text-body text-text-secondary">
+                        No open slots in the next 7 days.
+                    </p>
+                ) : (
+                    <div className="space-y-3">
+                        {slotsByDay.map(({ date, slots }) => (
+                            <div key={date} className="rounded-lg border border-border bg-bg p-3">
+                                <p className="text-body font-semibold text-text-primary">
+                                    {format(new Date(date), 'EEE, MMM d')}
+                                </p>
+                                {slots.length > 0 ? (
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                        {slots.slice(0, 8).map((slot) => (
+                                            <span
+                                                key={slot._id || slot.slotStart || slot.start}
+                                                className="rounded-pill border border-border px-3 py-1 text-caption text-text-primary"
+                                            >
+                                                {formatTime(slot.slotStart || slot.start)}
+                                            </span>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="mt-1 text-caption text-text-secondary">No slots</p>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </Card>
+        </div>
+    )
+}
+

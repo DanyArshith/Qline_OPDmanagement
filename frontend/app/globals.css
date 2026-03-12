@@ -8,6 +8,11 @@
     box-sizing: border-box;
   }
 
+  :root {
+    --qline-glow-a: rgba(15, 118, 110, 0.14);
+    --qline-glow-b: rgba(14, 165, 233, 0.1);
+  }
+
   html {
     font-family: 'Urbanist', sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -17,6 +22,9 @@
   body {
     @apply bg-bg text-text-primary;
     min-height: 100dvh;
+    background-image:
+      radial-gradient(1200px circle at 100% 0%, var(--qline-glow-a), transparent 42%),
+      radial-gradient(900px circle at 0% 100%, var(--qline-glow-b), transparent 45%);
   }
 
   /* Focus ring */
@@ -33,6 +41,23 @@
 }
 
 @layer utilities {
+  .glass-surface {
+    @apply bg-surface/85 border border-white/60 backdrop-blur-sm;
+  }
+
+  .section-shell {
+    @apply max-w-[1200px] mx-auto px-4 py-8;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   .animate-in {
     animation: animateIn 0.2s ease-out;
   }

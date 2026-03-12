@@ -1,9 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { addDays, format, isSameDay, startOfDay } from 'date-fns'
 import api from '@/lib/api'
+import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
 import { formatDate, formatTime } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
 import SlotPicker from '@/components/features/SlotPicker'
@@ -11,6 +12,7 @@ import Button from '@/components/ui/Button'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
 import Skeleton from '@/components/ui/Skeleton'
 import Modal from '@/components/ui/Modal'
+import { ErrorState } from '@/components/ui/AsyncState'
 
 const DATE_COUNT = 7
 
@@ -31,53 +33,92 @@ export default function BookPage() {
     const [slotsLoading, setSlotsLoading] = useState(false)
     const [bookLoading, setBookLoading] = useState(false)
     const [showConfirm, setShowConfirm] = useState(false)
+    const [error, setError] = useState('')
 
-    const days = generateDays()
+    const days = useMemo(() => generateDays(), [])
 
-    // Load doctor info
     useEffect(() => {
+        let mounted = true
+
         api.get(`/api/doctors/${doctorId}`)
-            .then((r) => setDoctor(r.data?.data ?? r.data))
-            .catch(() => toast.error('Doctor not found'))
-            .finally(() => setDoctorLoading(false))
-    }, [doctorId, toast])
+            .then((res) => {
+                if (!mounted) return
+                const payload = unwrapApiData(res)
+                const profile = payload?.data ?? payload
+                setDoctor(profile)
+            })
+            .catch((err) => {
+                if (!mounted) return
+                setError(normalizeApiError(err, 'Doctor not found'))
+            })
+            .finally(() => {
+                if (mounted) setDoctorLoading(false)
+            })
 
-    // Load slots for selected date
-    const loadSlots = useCallback(() => {
+        return () => {
+            mounted = false
+        }
+    }, [doctorId])
+
+    const loadSlots = useCallback(async () => {
         if (!doctorId) return
-        setSlotsLoading(true)
-        setSelectedSlot(null)
-        api
-            .get(`/api/doctors/${doctorId}/slots`, { params: { date: format(selectedDate, 'yyyy-MM-dd') } })
-            .then((r) => setSlots(r.data?.slots ?? r.data?.data ?? r.data ?? []))
-            .catch(() => toast.error('Could not load slots'))
-            .finally(() => setSlotsLoading(false))
-    }, [doctorId, selectedDate, toast])
+        try {
+            setSlotsLoading(true)
+            setError('')
+            setSelectedSlot(null)
 
-    useEffect(() => { loadSlots() }, [loadSlots])
+            const res = await api.get(`/api/doctors/${doctorId}/slots`, {
+                params: { date: format(selectedDate, 'yyyy-MM-dd') },
+            })
+
+            const payload = unwrapApiData(res)
+            const fetchedSlots = payload?.slots ?? payload?.data ?? []
+            setSlots(Array.isArray(fetchedSlots) ? fetchedSlots : [])
+        } catch (err) {
+            setSlots([])
+            setError(normalizeApiError(err, 'Could not load slots'))
+        } finally {
+            setSlotsLoading(false)
+        }
+    }, [doctorId, selectedDate])
+
+    useEffect(() => {
+        loadSlots()
+    }, [loadSlots])
 
     const handleBook = async () => {
+        if (!selectedSlot) return
+
         setBookLoading(true)
         try {
             await api.post('/api/appointments/book', {
                 doctorId,
                 date: format(selectedDate, 'yyyy-MM-dd'),
-                slotStart: selectedSlot.start || selectedSlot.slotStart,
-                slotEnd: selectedSlot.end || selectedSlot.slotEnd,
+                slotStart: selectedSlot.slotStart || selectedSlot.start,
+                slotEnd: selectedSlot.slotEnd || selectedSlot.end,
             })
-            toast.success('Appointment booked!')
+
+            toast.success('Appointment booked successfully')
             router.push('/appointments')
         } catch (err) {
-            toast.error(err?.response?.data?.message || 'Booking failed')
+            toast.error(normalizeApiError(err, 'Booking failed'))
         } finally {
             setBookLoading(false)
             setShowConfirm(false)
         }
     }
 
+    if (error && !doctorLoading && !doctor) {
+        return (
+            <ErrorState
+                message={error}
+                onRetry={() => router.refresh()}
+            />
+        )
+    }
+
     return (
-        <div className="max-w-2xl mx-auto space-y-6">
-            {/* Doctor info header */}
+        <div className="mx-auto max-w-2xl space-y-6">
             <Card>
                 {doctorLoading ? (
                     <div className="space-y-2">
@@ -86,15 +127,16 @@ export default function BookPage() {
                     </div>
                 ) : (
                     <div>
-                        <h1 className="text-h2 text-text-primary">{doctor?.user?.name}</h1>
+                        <h1 className="text-h2 text-text-primary">
+                            Dr. {doctor?.user?.name || doctor?.userId?.name || 'Doctor'}
+                        </h1>
                         <p className="text-body text-text-secondary">
-                            {doctor?.department} · {doctor?.defaultConsultTime} min per consultation
+                            {doctor?.department || 'General'} | {doctor?.defaultConsultTime || 15} min per consultation
                         </p>
                     </div>
                 )}
             </Card>
 
-            {/* Date selector */}
             <Card>
                 <CardHeader>
                     <CardTitle>Select a date</CardTitle>
@@ -105,26 +147,27 @@ export default function BookPage() {
                         return (
                             <button
                                 key={day.toISOString()}
-                                onClick={() => { setSelectedDate(day) }}
-                                className={`flex flex-col items-center px-4 py-2.5 rounded-md border shrink-0 transition-all duration-200 ${active
+                                onClick={() => setSelectedDate(day)}
+                                className={`shrink-0 rounded-md border px-4 py-2.5 transition-all duration-200 ${
+                                    active
                                         ? 'border-primary bg-primary-soft text-primary'
                                         : 'border-border text-text-secondary hover:border-primary'
-                                    }`}
+                                }`}
                             >
-                                <span className="text-caption uppercase">{format(day, 'EEE')}</span>
-                                <span className="text-body-lg font-semibold">{format(day, 'd')}</span>
+                                <span className="block text-caption uppercase">{format(day, 'EEE')}</span>
+                                <span className="block text-body-lg font-semibold">{format(day, 'd')}</span>
                             </button>
                         )
                     })}
                 </div>
             </Card>
 
-            {/* Slot picker */}
             <Card>
                 <CardHeader>
                     <CardTitle>Available slots</CardTitle>
                     <span className="text-body text-text-secondary">{formatDate(selectedDate)}</span>
                 </CardHeader>
+
                 {slotsLoading ? (
                     <div className="grid grid-cols-4 gap-2">
                         {Array.from({ length: 8 }).map((_, i) => (
@@ -138,44 +181,49 @@ export default function BookPage() {
                         onSelect={setSelectedSlot}
                     />
                 )}
+
+                {!slotsLoading && error && (
+                    <p className="mt-3 text-caption text-error">{error}</p>
+                )}
             </Card>
 
-            {/* Book CTA */}
             {selectedSlot && (
                 <div className="sticky bottom-4">
-                    <Card className="p-4 shadow-2 flex items-center justify-between gap-4">
+                    <Card className="flex items-center justify-between gap-4 p-4 shadow-2">
                         <span className="text-body text-text-secondary">
-                            Selected: <strong className="text-text-primary">{formatTime(selectedSlot.slotStart)}</strong>
+                            Selected: <strong className="text-text-primary">{formatTime(selectedSlot.slotStart || selectedSlot.start)}</strong>
                         </span>
-                        <Button onClick={() => setShowConfirm(true)}>
-                            Confirm Booking
-                        </Button>
+                        <Button onClick={() => setShowConfirm(true)}>Confirm booking</Button>
                     </Card>
                 </div>
             )}
 
-            {/* Confirm modal */}
             <Modal
                 isOpen={showConfirm}
                 onClose={() => setShowConfirm(false)}
-                title="Confirm Appointment"
+                title="Confirm appointment"
                 footer={
                     <>
-                        <Button variant="secondary" onClick={() => setShowConfirm(false)} disabled={bookLoading}>
+                        <Button
+                            variant="secondary"
+                            onClick={() => setShowConfirm(false)}
+                            disabled={bookLoading}
+                        >
                             Cancel
                         </Button>
                         <Button onClick={handleBook} loading={bookLoading}>
-                            Book Now
+                            Book now
                         </Button>
                     </>
                 }
             >
                 <p>
-                    Book appointment with <strong>{doctor?.user?.name}</strong> on{' '}
+                    Book with <strong>Dr. {doctor?.user?.name || doctor?.userId?.name || 'Doctor'}</strong> on{' '}
                     <strong>{formatDate(selectedDate)}</strong> at{' '}
-                    <strong>{formatTime(selectedSlot?.slotStart)}</strong>?
+                    <strong>{formatTime(selectedSlot?.slotStart || selectedSlot?.start)}</strong>?
                 </p>
             </Modal>
         </div>
     )
 }
+

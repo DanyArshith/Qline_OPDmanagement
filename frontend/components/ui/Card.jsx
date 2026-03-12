@@ -6,9 +6,9 @@ export default function Card({ children, className = '', hover = false, padding 
     return (
         <div
             className={cn(
-                'bg-surface rounded-lg shadow-1',
-                padding && 'p-4',
-                hover && 'transition-shadow duration-200 hover:shadow-2 cursor-pointer',
+                'rounded-xl border border-border/70 bg-surface/95 shadow-1 backdrop-blur-[1px]',
+                padding && 'p-5',
+                hover && 'cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-2',
                 className
             )}
         >

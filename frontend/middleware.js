@@ -16,7 +16,7 @@ const PUBLIC_PATHS = [
 ]
 
 const ROLE_DASHBOARDS = {
-    patient: '/doctors',
+    patient: '/patient/dashboard',
     doctor: '/doctor/dashboard',
     admin: '/admin/dashboard',
 }
@@ -31,29 +31,29 @@ export function middleware(request) {
     const { pathname } = request.nextUrl
     const role = request.cookies.get('qline_role')?.value
 
-    // 1. Always allow public paths
+    // 1. Always allow public paths.
     if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-        // If already authenticated, redirect to role home
+        // If already authenticated, redirect to role home.
         if (role && ROLE_DASHBOARDS[role]) {
             return NextResponse.redirect(new URL(ROLE_DASHBOARDS[role], request.url))
         }
         return NextResponse.next()
     }
 
-    // 2. Root path — redirect by role or to login
+    // 2. Root path: redirect by role or to login.
     if (pathname === '/') {
         const dest = role ? ROLE_DASHBOARDS[role] : '/login'
         return NextResponse.redirect(new URL(dest, request.url))
     }
 
-    // 3. Not authenticated → redirect to login
+    // 3. Not authenticated: redirect to login.
     if (!role) {
         const loginUrl = new URL('/login', request.url)
         loginUrl.searchParams.set('next', pathname)
         return NextResponse.redirect(loginUrl)
     }
 
-    // 4. Role mismatch → redirect to own dashboard
+    // 4. Role mismatch: redirect to own dashboard.
     const allowedPaths = ROLE_BASE_PATHS[role] || []
     const isAllowed = allowedPaths.some((p) => pathname.startsWith(p))
     if (!isAllowed) {
@@ -66,3 +66,4 @@ export function middleware(request) {
 export const config = {
     matcher: ['/((?!api|_next/static|_next/image|favicon.ico|.*\\..*).*)'],
 }
+

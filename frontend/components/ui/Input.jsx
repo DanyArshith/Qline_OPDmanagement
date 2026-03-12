@@ -25,7 +25,7 @@ const Input = forwardRef(function Input(
                 id={inputId}
                 required={required}
                 className={cn(
-                    'h-11 w-full rounded-md border px-4 bg-surface text-text-primary',
+                    'h-11 w-full rounded-lg border px-4 bg-surface/95 text-text-primary shadow-[inset_0_1px_1px_rgba(0,0,0,0.03)]',
                     'text-body placeholder:text-text-secondary',
                     'transition-colors duration-200 outline-none',
                     'focus:border-primary focus:ring-2 focus:ring-primary/10',

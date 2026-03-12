@@ -14,7 +14,7 @@ export default function AdminLayout({ children }) {
             <SocketConnector />
             <div className="min-h-screen bg-bg">
                 <Navbar />
-                <main className="max-w-[1200px] mx-auto px-4 py-8">
+                <main className="section-shell">
                     {children}
                 </main>
             </div>

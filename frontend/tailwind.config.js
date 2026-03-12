@@ -9,17 +9,18 @@ module.exports = {
     theme: {
         extend: {
             colors: {
-                primary: '#4C6FFF',
-                'primary-soft': '#F4F6FF',
-                bg: '#F8F9FB',
+                primary: '#0F766E',
+                'primary-soft': '#E8F6F4',
+                bg: '#F3F7F8',
                 surface: '#FFFFFF',
-                border: '#E6E8EF',
-                'text-primary': '#1E1F24',
-                'text-secondary': '#6B7280',
-                success: '#22C55E',
-                warning: '#F59E0B',
-                error: '#EF4444',
-                info: '#3B82F6',
+                border: '#D8E3E5',
+                'text-primary': '#113133',
+                'text-secondary': '#4B6A6D',
+                success: '#16A34A',
+                warning: '#D97706',
+                error: '#DC2626',
+                'error-light': '#FEF2F2',
+                info: '#0EA5E9',
             },
             borderRadius: {
                 sm: '8px',
@@ -30,8 +31,8 @@ module.exports = {
                 pill: '24px',
             },
             boxShadow: {
-                1: '0px 2px 8px rgba(0,0,0,0.04)',
-                2: '0px 4px 16px rgba(0,0,0,0.06)',
+                1: '0px 8px 24px rgba(15, 118, 110, 0.08)',
+                2: '0px 14px 34px rgba(12, 74, 110, 0.16)',
             },
             fontFamily: {
                 sans: ['Urbanist', 'sans-serif'],
