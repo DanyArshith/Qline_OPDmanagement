@@ -12,7 +12,9 @@ const notificationSchema = new mongoose.Schema({
         enum: [
             'appointment_booked',
             'appointment_reminder',
+            'appointment_rescheduled',
             'appointment_cancelled',
+            'doctor_unavailable',
             'token_called',
             'queue_paused',
             'queue_resumed',

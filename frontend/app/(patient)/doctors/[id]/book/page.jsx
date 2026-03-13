@@ -17,14 +17,17 @@ import { ErrorState } from '@/components/ui/AsyncState'
 const DATE_COUNT = 7
 
 function generateDays() {
-    return Array.from({ length: DATE_COUNT }, (_, i) => addDays(startOfDay(new Date()), i))
+    return Array.from({ length: DATE_COUNT }, (_, index) => addDays(startOfDay(new Date()), index))
 }
 
-// Safely add "Dr." prefix only once
 function drName(name) {
     if (!name) return 'Doctor'
-    const n = name.trim()
-    return n.toLowerCase().startsWith('dr.') ? n : `Dr. ${n}`
+    const normalized = name.trim()
+    return normalized.toLowerCase().startsWith('dr.') ? normalized : `Dr. ${normalized}`
+}
+
+function isWorkingDay(day, workingDays = []) {
+    return workingDays.includes(format(day, 'EEEE'))
 }
 
 export default function BookPage() {
@@ -34,6 +37,7 @@ export default function BookPage() {
 
     const [doctor, setDoctor] = useState(null)
     const [slots, setSlots] = useState([])
+    const [slotMeta, setSlotMeta] = useState(null)
     const [selectedDate, setSelectedDate] = useState(startOfDay(new Date()))
     const [selectedSlot, setSelectedSlot] = useState(null)
     const [doctorLoading, setDoctorLoading] = useState(true)
@@ -43,20 +47,22 @@ export default function BookPage() {
     const [error, setError] = useState('')
 
     const days = useMemo(() => generateDays(), [])
+    const availableSlots = slots.filter((slot) => slot.status === 'available')
+    const workingDays = doctor?.schedule?.workingDays ?? doctor?.workingDays ?? []
 
     useEffect(() => {
         let mounted = true
 
         api.get(`/api/doctors/${doctorId}`)
-            .then((res) => {
+            .then((response) => {
                 if (!mounted) return
-                const payload = unwrapApiData(res)
+                const payload = unwrapApiData(response)
                 const profile = payload?.data ?? payload
                 setDoctor(profile)
             })
-            .catch((err) => {
+            .catch((requestError) => {
                 if (!mounted) return
-                setError(normalizeApiError(err, 'Doctor not found'))
+                setError(normalizeApiError(requestError, 'Doctor not found'))
             })
             .finally(() => {
                 if (mounted) setDoctorLoading(false)
@@ -69,21 +75,27 @@ export default function BookPage() {
 
     const loadSlots = useCallback(async () => {
         if (!doctorId) return
+
         try {
             setSlotsLoading(true)
             setError('')
             setSelectedSlot(null)
 
-            const res = await api.get(`/api/doctors/${doctorId}/slots`, {
+            const response = await api.get(`/api/doctors/${doctorId}/slots`, {
                 params: { date: format(selectedDate, 'yyyy-MM-dd') },
             })
 
-            const payload = unwrapApiData(res)
+            const payload = unwrapApiData(response)
             const fetchedSlots = payload?.slots ?? payload?.data ?? []
             setSlots(Array.isArray(fetchedSlots) ? fetchedSlots : [])
-        } catch (err) {
+            setSlotMeta({
+                availability: payload?.availability ?? null,
+                schedule: payload?.schedule ?? null,
+            })
+        } catch (requestError) {
             setSlots([])
-            setError(normalizeApiError(err, 'Could not load slots'))
+            setSlotMeta(null)
+            setError(normalizeApiError(requestError, 'Could not load slots'))
         } finally {
             setSlotsLoading(false)
         }
@@ -107,8 +119,8 @@ export default function BookPage() {
 
             toast.success('Appointment booked successfully')
             router.push('/appointments')
-        } catch (err) {
-            toast.error(normalizeApiError(err, 'Booking failed'))
+        } catch (requestError) {
+            toast.error(normalizeApiError(requestError, 'Booking failed'))
         } finally {
             setBookLoading(false)
             setShowConfirm(false)
@@ -125,7 +137,7 @@ export default function BookPage() {
     }
 
     return (
-        <div className="mx-auto max-w-2xl space-y-6">
+        <div className="mx-auto max-w-3xl space-y-6">
             <Card>
                 {doctorLoading ? (
                     <div className="space-y-2">
@@ -133,13 +145,37 @@ export default function BookPage() {
                         <Skeleton className="h-4 w-1/4" />
                     </div>
                 ) : (
-                    <div>
-                        <h1 className="text-h2 text-text-primary">
-                            {drName(doctor?.user?.name || doctor?.userId?.name)}
-                        </h1>
-                        <p className="text-body text-text-secondary">
-                            {doctor?.department || 'General'} &middot; {doctor?.defaultConsultTime || 15} min consultation
-                        </p>
+                    <div className="space-y-4">
+                        <div>
+                            <h1 className="text-h2 text-text-primary">
+                                {drName(doctor?.user?.name || doctor?.userId?.name)}
+                            </h1>
+                            <p className="text-body text-text-secondary">{doctor?.department || 'General Medicine'}</p>
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                            <Metric label="Consultation Time" value={`${doctor?.defaultConsultTime || doctor?.schedule?.consultationDuration || 15} min`} />
+                            <Metric label="Patients in Queue" value={doctor?.waitingTime?.patientsInQueue ?? 0} />
+                            <Metric label="Estimated Wait" value={`${doctor?.waitingTime?.estimatedWaitMinutes ?? 0} min`} />
+                            <Metric label="Working Hours" value={`${doctor?.workingHours?.start || doctor?.schedule?.workingHours?.start || '--:--'} - ${doctor?.workingHours?.end || doctor?.schedule?.workingHours?.end || '--:--'}`} />
+                        </div>
+
+                        <div>
+                            <p className="mb-2 text-caption text-text-secondary">Working Days</p>
+                            <div className="flex flex-wrap gap-2">
+                                {workingDays.map((day) => (
+                                    <span key={day} className="rounded-full bg-success/10 px-3 py-1 text-caption font-medium text-success">
+                                        {day}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+
+                        {!doctor?.availabilityStatus?.available && doctor?.availabilityStatus?.message ? (
+                            <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 text-body text-text-primary">
+                                {doctor.availabilityStatus.message}
+                            </div>
+                        ) : null}
                     </div>
                 )}
             </Card>
@@ -151,17 +187,22 @@ export default function BookPage() {
                 <div className="flex gap-2 overflow-x-auto pb-1">
                     {days.map((day) => {
                         const active = isSameDay(day, selectedDate)
+                        const working = isWorkingDay(day, workingDays)
+
                         return (
                             <button
                                 key={day.toISOString()}
                                 onClick={() => setSelectedDate(day)}
                                 className={`shrink-0 rounded-md border px-4 py-2.5 transition-all duration-200 ${active
                                     ? 'border-primary bg-primary-soft text-primary'
-                                    : 'border-border text-text-secondary hover:border-primary'
+                                    : working
+                                        ? 'border-border text-text-secondary hover:border-primary'
+                                        : 'border-border bg-bg text-text-secondary opacity-70'
                                     }`}
                             >
                                 <span className="block text-caption uppercase">{format(day, 'EEE')}</span>
                                 <span className="block text-body-lg font-semibold">{format(day, 'd')}</span>
+                                <span className="block text-caption">{working ? 'Open' : 'Off'}</span>
                             </button>
                         )
                     })}
@@ -170,30 +211,38 @@ export default function BookPage() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Available slots</CardTitle>
+                    <CardTitle>Available Time Slots</CardTitle>
                     <span className="text-body text-text-secondary">{formatDate(selectedDate)}</span>
                 </CardHeader>
 
                 {slotsLoading ? (
                     <div className="grid grid-cols-4 gap-2">
-                        {Array.from({ length: 8 }).map((_, i) => (
-                            <Skeleton key={i} className="h-10 rounded-pill" />
+                        {Array.from({ length: 8 }).map((_, index) => (
+                            <Skeleton key={index} className="h-10 rounded-pill" />
                         ))}
                     </div>
                 ) : (
-                    <SlotPicker
-                        slots={slots}
-                        selectedSlot={selectedSlot}
-                        onSelect={setSelectedSlot}
-                    />
+                    <>
+                        <SlotPicker
+                            slots={slots}
+                            selectedSlot={selectedSlot}
+                            onSelect={setSelectedSlot}
+                        />
+
+                        {!availableSlots.length ? (
+                            <p className="mt-3 text-caption text-text-secondary">
+                                {slotMeta?.availability?.message || 'No available slots for this date.'}
+                            </p>
+                        ) : null}
+                    </>
                 )}
 
-                {!slotsLoading && error && (
+                {!slotsLoading && error ? (
                     <p className="mt-3 text-caption text-error">{error}</p>
-                )}
+                ) : null}
             </Card>
 
-            {selectedSlot && (
+            {selectedSlot ? (
                 <div className="sticky bottom-4">
                     <Card className="flex items-center justify-between gap-4 p-4 shadow-2">
                         <span className="text-body text-text-secondary">
@@ -202,34 +251,36 @@ export default function BookPage() {
                         <Button onClick={() => setShowConfirm(true)}>Confirm booking</Button>
                     </Card>
                 </div>
-            )}
+            ) : null}
 
             <Modal
                 isOpen={showConfirm}
                 onClose={() => setShowConfirm(false)}
                 title="Confirm appointment"
-                footer={
+                footer={(
                     <>
-                        <Button
-                            variant="secondary"
-                            onClick={() => setShowConfirm(false)}
-                            disabled={bookLoading}
-                        >
+                        <Button variant="secondary" onClick={() => setShowConfirm(false)} disabled={bookLoading}>
                             Cancel
                         </Button>
                         <Button onClick={handleBook} loading={bookLoading}>
                             Book now
                         </Button>
                     </>
-                }
+                )}
             >
                 <p>
-                    Book with <strong>{drName(doctor?.user?.name || doctor?.userId?.name)}</strong> on{' '}
-                    <strong>{formatDate(selectedDate)}</strong> at{' '}
-                    <strong>{formatTime(selectedSlot?.slotStart || selectedSlot?.start)}</strong>?
+                    Book with <strong>{drName(doctor?.user?.name || doctor?.userId?.name)}</strong> on <strong>{formatDate(selectedDate)}</strong> at <strong>{formatTime(selectedSlot?.slotStart || selectedSlot?.start)}</strong>?
                 </p>
             </Modal>
         </div>
     )
 }
 
+function Metric({ label, value }) {
+    return (
+        <div className="rounded-lg border border-border bg-bg p-4">
+            <p className="text-caption text-text-secondary">{label}</p>
+            <p className="text-body font-semibold text-text-primary">{value}</p>
+        </div>
+    )
+}

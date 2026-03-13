@@ -35,6 +35,7 @@ export const STATUS_CONFIG = {
     senior: { label: 'Senior', bg: 'bg-warning/10', text: 'text-warning' },
     standard: { label: 'Standard', bg: 'bg-info/10', text: 'text-info' },
     active: { label: 'Active', bg: 'bg-success/10', text: 'text-success' },
+    inactive: { label: 'Inactive', bg: 'bg-error/10', text: 'text-error' },
     paused: { label: 'Paused', bg: 'bg-warning/10', text: 'text-warning' },
 }
 

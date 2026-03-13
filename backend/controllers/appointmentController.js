@@ -6,6 +6,7 @@ const QueueEvent = require('../models/QueueEvent');
 const asyncHandler = require('../utils/asyncHandler');
 const { normalizeDate, isInPast, getSlotDuration } = require('../utils/dateUtils');
 const notificationService = require('../services/notificationService');
+const { checkSlotAvailability } = require('../services/slotService');
 
 /**
  * @desc    Book an appointment slot (Transaction-safe with conditional atomic increment)
@@ -22,7 +23,7 @@ const bookAppointment = asyncHandler(async (req, res) => {
 
     // 1. Fetch doctor
     const doctor = await Doctor.findById(doctorId);
-    if (!doctor || !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay) {
+    if (!doctor || !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay || !doctor.isConfigured) {
         res.status(400);
         throw new Error('Doctor has not fully configured their schedule');
     }
@@ -57,16 +58,17 @@ const bookAppointment = asyncHandler(async (req, res) => {
         throw new Error('Cannot book appointments in the past');
     }
 
-    // 7. Check slot not already booked (atomic: slot uniqueness via unique index)
-    const existingSlot = await Appointment.findOne({
+    // 7. Validate generated slot against working days, inactive periods, breaks, occupancy, and daily limit
+    const slotCheck = await checkSlotAvailability(
         doctorId,
-        date: normalizedDate,
-        slotStart: slotStartDate,
-        status: { $in: ['booked', 'waiting', 'in_progress'] },
-    });
-    if (existingSlot) {
-        res.status(409);
-        throw new Error('This slot is no longer available');
+        normalizedDate,
+        slotStartDate,
+        slotEndDate,
+        { doctorDoc: doctor }
+    );
+    if (!slotCheck.available) {
+        res.status(slotCheck.reasonCode === 'slot_booked' ? 409 : 400);
+        throw new Error(slotCheck.message);
     }
 
     // 8. Atomic increment queue count (upsert creates queue if not exists)

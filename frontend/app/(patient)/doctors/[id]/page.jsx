@@ -15,7 +15,7 @@ const LOOKAHEAD_DAYS = 7
 
 function upcomingDates() {
     const today = startOfDay(new Date())
-    return Array.from({ length: LOOKAHEAD_DAYS }, (_, i) => addDays(today, i))
+    return Array.from({ length: LOOKAHEAD_DAYS }, (_, index) => addDays(today, index))
 }
 
 export default function DoctorDetailPage() {
@@ -34,8 +34,8 @@ export default function DoctorDetailPage() {
             setLoading(true)
             setError('')
 
-            const doctorRes = await api.get(`/api/doctors/${doctorId}`)
-            const raw = unwrapApiData(doctorRes)
+            const doctorResponse = await api.get(`/api/doctors/${doctorId}`)
+            const raw = unwrapApiData(doctorResponse)
             const profile = raw?.data ?? raw
 
             if (!profile?._id) {
@@ -45,28 +45,32 @@ export default function DoctorDetailPage() {
             setDoctor({
                 ...profile,
                 name: drName(profile?.user?.name ?? profile?.userId?.name),
-                specialization: profile?.specialization || profile?.department || 'General',
+                specialization: profile?.specialization || profile?.department || 'General Medicine',
             })
 
             const slotResults = await Promise.all(
                 dates.map(async (day) => {
                     const dateValue = format(day, 'yyyy-MM-dd')
                     try {
-                        const slotRes = await api.get(`/api/doctors/${doctorId}/slots`, {
+                        const slotResponse = await api.get(`/api/doctors/${doctorId}/slots`, {
                             params: { date: dateValue },
                         })
-                        const payload = unwrapApiData(slotRes)
+                        const payload = unwrapApiData(slotResponse)
                         const slots = payload?.slots ?? payload?.data ?? []
-                        return { date: dateValue, slots: Array.isArray(slots) ? slots : [] }
+                        return {
+                            date: dateValue,
+                            slots: Array.isArray(slots) ? slots : [],
+                            availability: payload?.availability ?? null,
+                        }
                     } catch {
-                        return { date: dateValue, slots: [] }
+                        return { date: dateValue, slots: [], availability: null }
                     }
                 })
             )
 
             setSlotsByDay(slotResults)
-        } catch (err) {
-            setError(normalizeApiError(err, 'Failed to load doctor details'))
+        } catch (requestError) {
+            setError(normalizeApiError(requestError, 'Failed to load doctor details'))
         } finally {
             setLoading(false)
         }
@@ -88,7 +92,8 @@ export default function DoctorDetailPage() {
         )
     }
 
-    const hasAnySlots = slotsByDay.some((row) => row.slots.length > 0)
+    const hasAnySlots = slotsByDay.some((row) => row.slots.some((slot) => slot.status === 'available'))
+    const workingDays = doctor.schedule?.workingDays ?? doctor.workingDays ?? []
 
     return (
         <div className="space-y-6">
@@ -102,90 +107,83 @@ export default function DoctorDetailPage() {
                     <p className="text-body text-text-secondary">{doctor.specialization}</p>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    <div className="rounded-lg border border-border bg-bg p-4">
-                        <p className="text-caption text-text-secondary">Department</p>
-                        <p className="text-body font-semibold text-text-primary">{doctor.department || 'Not set'}</p>
-                    </div>
-                    <div className="rounded-lg border border-border bg-bg p-4">
-                        <p className="text-caption text-text-secondary">Consultation Duration</p>
-                        <p className="text-body font-semibold text-text-primary">
-                            {doctor.defaultConsultTime || 15} min
-                        </p>
-                    </div>
-                    <div className="rounded-lg border border-border bg-bg p-4">
-                        <p className="text-caption text-text-secondary">Working Hours</p>
-                        <p className="text-body font-semibold text-text-primary">
-                            {doctor.workingHours?.start || '--:--'} to {doctor.workingHours?.end || '--:--'}
-                        </p>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <Info label="Department" value={doctor.department || 'Not set'} />
+                    <Info label="Consultation Duration" value={`${doctor.defaultConsultTime || doctor.schedule?.consultationDuration || 15} min`} />
+                    <Info label="Patients in Queue" value={doctor.waitingTime?.patientsInQueue ?? 0} />
+                    <Info label="Estimated Wait" value={`${doctor.waitingTime?.estimatedWaitMinutes ?? 0} min`} />
+                </div>
+
+                <div>
+                    <p className="mb-2 text-caption text-text-secondary">Working Days</p>
+                    <div className="flex flex-wrap gap-2">
+                        {workingDays.map((day) => (
+                            <span key={day} className="rounded-full bg-success/10 px-3 py-1 text-caption font-medium text-success">
+                                {day}
+                            </span>
+                        ))}
                     </div>
                 </div>
 
-                {doctor.waitingTime && (
-                    <div className="rounded-lg border-2 border-warning/30 bg-warning/5 p-4">
-                        <h3 className="mb-3 text-body font-semibold text-text-primary">Current Queue Status</h3>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <div className="flex flex-col">
-                                <span className="text-caption text-text-secondary">Estimated Wait Time</span>
-                                <span className="text-body-lg font-bold text-warning">{doctor.waitingTime.estimatedWaitMinutes} minutes</span>
-                            </div>
-                            <div className="flex flex-col">
-                                <span className="text-caption text-text-secondary">Patients in Queue</span>
-                                <span className="text-body-lg font-bold text-primary">{doctor.waitingTime.patientsInQueue} patient{doctor.waitingTime.patientsInQueue !== 1 ? 's' : ''}</span>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                <div className="rounded-lg border border-border bg-bg p-4">
+                    <p className="text-caption text-text-secondary">Working Hours</p>
+                    <p className="text-body font-semibold text-text-primary">
+                        {doctor.workingHours?.start || doctor.schedule?.workingHours?.start || '--:--'} to {doctor.workingHours?.end || doctor.schedule?.workingHours?.end || '--:--'}
+                    </p>
+                </div>
 
-                {doctor.bio && (
-                    <div>
-                        <h2 className="mb-2 text-h3 text-text-primary">About</h2>
-                        <p className="text-body text-text-secondary">{doctor.bio}</p>
+                {doctor.availabilityStatus?.message ? (
+                    <div className={`rounded-lg border p-4 ${doctor.availabilityStatus.available ? 'border-success/30 bg-success/5' : 'border-warning/30 bg-warning/5'}`}>
+                        <p className="text-body text-text-primary">{doctor.availabilityStatus.message}</p>
                     </div>
-                )}
+                ) : null}
 
                 <div className="flex items-center gap-3">
                     <Link href={`/doctors/${doctor._id}/book`}>
                         <Button>Book Appointment</Button>
                     </Link>
                     <span className="text-caption text-text-secondary">
-                        Reviews, favorites, and payments are deferred in this MVP.
+                        Break slots and working days are reflected in the booking calendar.
                     </span>
                 </div>
             </Card>
 
             <Card className="p-6">
                 <CardHeader>
-                    <CardTitle>Next 7 days availability</CardTitle>
+                    <CardTitle>Next 7 Days Availability</CardTitle>
                 </CardHeader>
 
                 {!hasAnySlots ? (
-                    <p className="text-body text-text-secondary">
-                        No open slots in the next 7 days.
-                    </p>
+                    <p className="text-body text-text-secondary">No open slots in the next 7 days.</p>
                 ) : (
                     <div className="space-y-3">
-                        {slotsByDay.map(({ date, slots }) => (
-                            <div key={date} className="rounded-lg border border-border bg-bg p-3">
-                                <p className="text-body font-semibold text-text-primary">
-                                    {format(new Date(date), 'EEE, MMM d')}
-                                </p>
-                                {slots.length > 0 ? (
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                        {slots.slice(0, 8).map((slot) => (
-                                            <span
-                                                key={slot._id || slot.slotStart || slot.start}
-                                                className="rounded-pill border border-border px-3 py-1 text-caption text-text-primary"
-                                            >
-                                                {formatTime(slot.slotStart || slot.start)}
-                                            </span>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <p className="mt-1 text-caption text-text-secondary">No slots</p>
-                                )}
-                            </div>
-                        ))}
+                        {slotsByDay.map(({ date, slots, availability }) => {
+                            const availableSlots = slots.filter((slot) => slot.status === 'available')
+
+                            return (
+                                <div key={date} className="rounded-lg border border-border bg-bg p-3">
+                                    <p className="text-body font-semibold text-text-primary">
+                                        {format(new Date(date), 'EEE, MMM d')}
+                                    </p>
+                                    {availableSlots.length > 0 ? (
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            {availableSlots.slice(0, 8).map((slot) => (
+                                                <span
+                                                    key={slot._id || slot.slotStart || slot.start}
+                                                    className="rounded-pill border border-border px-3 py-1 text-caption text-text-primary"
+                                                >
+                                                    {formatTime(slot.slotStart || slot.start)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="mt-1 text-caption text-text-secondary">
+                                            {availability?.message || 'No slots'}
+                                        </p>
+                                    )}
+                                </div>
+                            )
+                        })}
                     </div>
                 )}
             </Card>
@@ -193,3 +191,11 @@ export default function DoctorDetailPage() {
     )
 }
 
+function Info({ label, value }) {
+    return (
+        <div className="rounded-lg border border-border bg-bg p-4">
+            <p className="text-caption text-text-secondary">{label}</p>
+            <p className="text-body font-semibold text-text-primary">{value}</p>
+        </div>
+    )
+}

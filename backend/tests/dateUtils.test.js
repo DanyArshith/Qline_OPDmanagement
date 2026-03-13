@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+    getWeekdayName,
+    normalizeWeekdayName,
+    normalizeWorkingDays,
     normalizeDate,
     parseTimeString,
     formatTimeString,
@@ -10,6 +13,7 @@ const {
     hasOverlap,
     validateBreakSlots,
     isSameDay,
+    isDateWithinRange,
 } = require('../utils/dateUtils');
 
 test('normalizeDate returns midnight UTC for input date', () => {
@@ -89,4 +93,25 @@ test('isSameDay compares dates in UTC day space', () => {
 
     assert.equal(isSameDay(d1, d2), true);
     assert.equal(isSameDay(d1, d3), false);
+});
+
+test('weekday helpers normalize and order working days', () => {
+    assert.equal(getWeekdayName('2026-03-09T08:00:00.000Z'), 'Monday');
+    assert.equal(normalizeWeekdayName('thu'), 'Thursday');
+    assert.equal(normalizeWeekdayName('Sunday'), 'Sunday');
+    assert.deepEqual(
+        normalizeWorkingDays(['fri', 'monday', 'Wed', 'invalid']),
+        ['Monday', 'Wednesday', 'Friday']
+    );
+});
+
+test('isDateWithinRange checks inclusive UTC date ranges', () => {
+    assert.equal(
+        isDateWithinRange('2026-03-11T15:00:00.000Z', '2026-03-10T00:00:00.000Z', '2026-03-12T23:59:59.000Z'),
+        true
+    );
+    assert.equal(
+        isDateWithinRange('2026-03-13T00:00:00.000Z', '2026-03-10T00:00:00.000Z', '2026-03-12T23:59:59.000Z'),
+        false
+    );
 });

@@ -54,22 +54,15 @@ export default function DoctorCard({ doctor }) {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-caption">
-                {slotTime ? (
-                    <span className="inline-flex items-center gap-1 text-success">
-                        <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                        Next slot: {slotTime}
-                    </span>
-                ) : (
-                    <span className="inline-flex items-center gap-1 text-error">
-                        <span className="h-1.5 w-1.5 rounded-full bg-error" />
-                        No slots today
-                    </span>
-                )}
+                <span className="inline-flex items-center gap-1 text-success">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                    Available for Booking
+                </span>
             </div>
 
             <Link href={`/doctors/${_id}/book`} tabIndex={-1} className="mt-auto">
-                <Button fullWidth disabled={!slotTime}>
-                    {slotTime ? 'Book Appointment' : 'Unavailable'}
+                <Button fullWidth>
+                    Book Appointment
                 </Button>
             </Link>
         </article>

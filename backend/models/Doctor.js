@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 
+const DEFAULT_WORKING_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
 const doctorSchema = new mongoose.Schema(
     {
         userId: {
@@ -39,8 +41,38 @@ const doctorSchema = new mongoose.Schema(
             {
                 start: String, // Format: "HH:MM"
                 end: String, // Format: "HH:MM"
+                reason: {
+                    type: String,
+                    trim: true,
+                    default: '',
+                },
             },
         ],
+        workingDays: {
+            type: [String],
+            default: DEFAULT_WORKING_DAYS,
+        },
+        isActive: {
+            type: Boolean,
+            default: true,
+        },
+        inactiveFrom: {
+            type: Date,
+            default: null,
+        },
+        inactiveUntil: {
+            type: Date,
+            default: null,
+        },
+        inactiveReason: {
+            type: String,
+            trim: true,
+            default: '',
+        },
+        leaveUntil: {
+            type: Date,
+            default: null
+        },
         timezone: {
             type: String,
             default: 'UTC',
@@ -59,5 +91,6 @@ const doctorSchema = new mongoose.Schema(
 
 // Index for faster queries
 doctorSchema.index({ userId: 1 });
+doctorSchema.index({ isActive: 1, inactiveFrom: 1, inactiveUntil: 1 });
 
 module.exports = mongoose.model('Doctor', doctorSchema);

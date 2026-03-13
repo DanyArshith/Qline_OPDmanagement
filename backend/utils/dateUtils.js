@@ -3,6 +3,16 @@
  * All dates are normalized to midnight UTC for consistency
  */
 
+const DAY_NAMES = [
+    'Sunday',
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+];
+
 /**
  * Normalize a date to midnight UTC (00:00:00.000)
  * @param {Date|string} dateInput - Date to normalize
@@ -11,6 +21,52 @@
 const normalizeDate = (dateInput) => {
     const d = new Date(dateInput);
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+};
+
+/**
+ * Get weekday name for a date in UTC
+ * @param {Date|string} dateInput
+ * @returns {string}
+ */
+const getWeekdayName = (dateInput) => DAY_NAMES[normalizeDate(dateInput).getUTCDay()];
+
+/**
+ * Normalize a weekday label to the canonical full English name
+ * @param {string} day
+ * @returns {string|null}
+ */
+const normalizeWeekdayName = (day) => {
+    if (!day || typeof day !== 'string') {
+        return null;
+    }
+
+    const normalized = day.trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    return DAY_NAMES.find((value) => {
+        const lowerValue = value.toLowerCase();
+        return lowerValue === normalized || lowerValue.slice(0, 3) === normalized.slice(0, 3);
+    }) || null;
+};
+
+/**
+ * Normalize a working-day array to canonical weekday names
+ * @param {string[]} workingDays
+ * @returns {string[]}
+ */
+const normalizeWorkingDays = (workingDays = []) => {
+    const uniqueDays = new Set();
+
+    for (const day of workingDays) {
+        const normalized = normalizeWeekdayName(day);
+        if (normalized) {
+            uniqueDays.add(normalized);
+        }
+    }
+
+    return DAY_NAMES.filter((day) => uniqueDays.has(day));
 };
 
 /**
@@ -140,8 +196,31 @@ const isSameDay = (date1, date2) => {
     );
 };
 
+/**
+ * Check whether a normalized UTC date falls inside an inclusive UTC date range
+ * @param {Date|string} date
+ * @param {Date|string|null} start
+ * @param {Date|string|null} end
+ * @returns {boolean}
+ */
+const isDateWithinRange = (date, start, end) => {
+    if (!start || !end) {
+        return false;
+    }
+
+    const value = normalizeDate(date).getTime();
+    const rangeStart = normalizeDate(start).getTime();
+    const rangeEnd = normalizeDate(end).getTime();
+
+    return value >= rangeStart && value <= rangeEnd;
+};
+
 module.exports = {
+    DAY_NAMES,
     normalizeDate,
+    getWeekdayName,
+    normalizeWeekdayName,
+    normalizeWorkingDays,
     parseTimeString,
     formatTimeString,
     validateTimeFormat,
@@ -151,4 +230,5 @@ module.exports = {
     hasOverlap,
     validateBreakSlots,
     isSameDay,
+    isDateWithinRange,
 };

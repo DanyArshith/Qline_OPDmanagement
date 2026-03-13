@@ -316,6 +316,148 @@ exports.sendTokenCalledNotification = async (appointment, io) => {
     }
 };
 
+const resolveDoctorName = async ({ doctorId, doctorName }) => {
+    if (doctorName) {
+        return doctorName;
+    }
+
+    if (!doctorId) {
+        return 'Doctor';
+    }
+
+    try {
+        const Doctor = require('../models/Doctor');
+        const doctor = await Doctor.findById(doctorId)
+            .populate('userId', 'name')
+            .select('userId')
+            .lean();
+        return doctor?.userId?.name || 'Doctor';
+    } catch {
+        return 'Doctor';
+    }
+};
+
+exports.sendAppointmentRescheduledNotification = async ({
+    patientId,
+    appointmentId,
+    doctorId,
+    doctorName,
+    previousSlotStart,
+    newSlotStart,
+    reason,
+}, io) => {
+    try {
+        const patient = await User.findById(patientId).select('name email').lean();
+        if (!patient) {
+            return null;
+        }
+
+        const resolvedDoctorName = await resolveDoctorName({ doctorId, doctorName });
+        const message = `Your appointment with Dr. ${resolvedDoctorName} on ${new Date(previousSlotStart).toLocaleString()} has been rescheduled to ${new Date(newSlotStart).toLocaleString()} due to doctor unavailability.`;
+
+        const notification = await exports.createNotification(
+            patientId,
+            'appointment_rescheduled',
+            'Appointment Rescheduled',
+            message,
+            {
+                appointmentId,
+                doctorId,
+                previousSlotStart,
+                newSlotStart,
+                reason: reason || '',
+            }
+        );
+
+        if (io && notification?._id) {
+            io.to(`user:${patientId}`).emit('notification:new', {
+                id: notification._id,
+                type: notification.type,
+                title: notification.title,
+                message: notification.message,
+                data: notification.data,
+                createdAt: notification.createdAt,
+            });
+        }
+
+        if (patient.email) {
+            const html = `
+                <p>Dear ${patient.name},</p>
+                <p>${message}</p>
+                ${reason ? `<p>Reason: ${reason}</p>` : ''}
+            `;
+            await exports.sendEmail(patient.email, 'Appointment Rescheduled - Qline', html, message);
+        }
+
+        return notification;
+    } catch (error) {
+        logger.error('Error sending appointment rescheduled notification:', error);
+        return null;
+    }
+};
+
+exports.sendDoctorUnavailableNotification = async ({
+    patientId,
+    appointmentId,
+    doctorId,
+    doctorName,
+    slotStart,
+    reason,
+    cancelled = false,
+}, io) => {
+    try {
+        const patient = await User.findById(patientId).select('name email').lean();
+        if (!patient) {
+            return null;
+        }
+
+        const resolvedDoctorName = await resolveDoctorName({ doctorId, doctorName });
+        const message = cancelled
+            ? `Your appointment with Dr. ${resolvedDoctorName} on ${new Date(slotStart).toLocaleString()} has been cancelled due to doctor unavailability.`
+            : `Dr. ${resolvedDoctorName} is unavailable for your appointment on ${new Date(slotStart).toLocaleString()}.`;
+
+        const notification = await exports.createNotification(
+            patientId,
+            cancelled ? 'appointment_cancelled' : 'doctor_unavailable',
+            cancelled ? 'Appointment Cancelled' : 'Doctor Unavailable',
+            message,
+            {
+                appointmentId,
+                doctorId,
+                slotStart,
+                reason: reason || '',
+                cancelled,
+            }
+        );
+
+        if (io && notification?._id) {
+            io.to(`user:${patientId}`).emit('notification:new', {
+                id: notification._id,
+                type: notification.type,
+                title: notification.title,
+                message: notification.message,
+                data: notification.data,
+                createdAt: notification.createdAt,
+            });
+        }
+
+        if (patient.email) {
+            const subject = cancelled ? 'Appointment Cancelled - Qline' : 'Doctor Unavailable - Qline';
+            const html = `
+                <p>Dear ${patient.name},</p>
+                <p>${message}</p>
+                ${reason ? `<p>Reason: ${reason}</p>` : ''}
+            `;
+            await exports.sendEmail(patient.email, subject, html, message);
+        }
+
+        return notification;
+    } catch (error) {
+        logger.error('Error sending doctor unavailable notification:', error);
+        return null;
+    }
+};
+
 // ─── CRUD Operations ─────────────────────────────────────────────────────────
 
 /**

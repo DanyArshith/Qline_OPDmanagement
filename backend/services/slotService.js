@@ -5,188 +5,381 @@ const {
     parseTimeString,
     addMinutes,
     hasOverlap,
+    getWeekdayName,
+    normalizeWorkingDays,
+    isDateWithinRange,
 } = require('../utils/dateUtils');
 
-/**
- * Generate available time slots for a doctor on a specific date
- * @param {string} doctorId - Doctor's MongoDB ID
- * @param {Date|string} date - Date to generate slots for
- * @returns {Promise<Array>} - Array of slot objects with availability status
- */
-const generateSlots = async (doctorId, date) => {
-    // 1. Fetch doctor configuration
-    const doctor = await Doctor.findById(doctorId);
+const ACTIVE_APPOINTMENT_STATUSES = ['booked', 'waiting', 'in_progress'];
 
-    // 2. Validate doctor is fully configured
-    if (
-        !doctor ||
-        !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay || !doctor.isConfigured
-    ) {
+const isDoctorConfigured = (doctor) => (
+    Boolean(
+        doctor &&
+        doctor.workingHours &&
+        doctor.workingHours.start &&
+        doctor.workingHours.end &&
+        doctor.defaultConsultTime &&
+        doctor.maxPatientsPerDay &&
+        doctor.isConfigured
+    )
+);
+
+const getNormalizedWorkingDays = (doctor) => {
+    const workingDays = normalizeWorkingDays(doctor?.workingDays);
+    return workingDays.length > 0 ? workingDays : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+};
+
+const isDoctorInactiveOnDate = (doctor, date) => {
+    if (!doctor) {
+        return false;
+    }
+
+    if (doctor.inactiveFrom && doctor.inactiveUntil) {
+        return isDateWithinRange(date, doctor.inactiveFrom, doctor.inactiveUntil);
+    }
+
+    return doctor.isActive === false;
+};
+
+const getDoctorAvailabilityForDate = (doctor, date) => {
+    const normalizedDate = normalizeDate(date);
+    const dayName = getWeekdayName(normalizedDate);
+
+    if (!doctor) {
+        return {
+            available: false,
+            reasonCode: 'doctor_not_found',
+            message: 'Doctor not found',
+            normalizedDate,
+            dayName,
+        };
+    }
+
+    if (!isDoctorConfigured(doctor)) {
+        return {
+            available: false,
+            reasonCode: 'schedule_not_configured',
+            message: 'Doctor has not fully configured their schedule',
+            normalizedDate,
+            dayName,
+        };
+    }
+
+    const workingDays = getNormalizedWorkingDays(doctor);
+    const isWorkingDay = workingDays.includes(dayName);
+
+    if (!isWorkingDay) {
+        return {
+            available: false,
+            reasonCode: 'non_working_day',
+            message: `Doctor does not work on ${dayName}`,
+            normalizedDate,
+            dayName,
+            workingDays,
+            isWorkingDay: false,
+        };
+    }
+
+    if (isDoctorInactiveOnDate(doctor, normalizedDate)) {
+        return {
+            available: false,
+            reasonCode: 'doctor_inactive',
+            message: doctor.inactiveReason
+                ? `Doctor is unavailable: ${doctor.inactiveReason}`
+                : 'Doctor is unavailable on the selected date',
+            normalizedDate,
+            dayName,
+            workingDays,
+            isWorkingDay: true,
+            isInactive: true,
+            inactiveFrom: doctor.inactiveFrom || null,
+            inactiveUntil: doctor.inactiveUntil || null,
+            inactiveReason: doctor.inactiveReason || '',
+        };
+    }
+
+    return {
+        available: true,
+        reasonCode: 'available',
+        message: 'Doctor is available on the selected date',
+        normalizedDate,
+        dayName,
+        workingDays,
+        isWorkingDay: true,
+        isInactive: false,
+        inactiveFrom: doctor.inactiveFrom || null,
+        inactiveUntil: doctor.inactiveUntil || null,
+        inactiveReason: doctor.inactiveReason || '',
+    };
+};
+
+const buildBreakRanges = (doctor, normalizedDate) => (
+    (doctor.breakSlots || []).map((slot) => ({
+        ...slot,
+        start: parseTimeString(slot.start, normalizedDate),
+        end: parseTimeString(slot.end, normalizedDate),
+    }))
+);
+
+const getDoctorById = async (doctorId, options = {}) => {
+    if (options.doctorDoc) {
+        return options.doctorDoc;
+    }
+
+    const query = Doctor.findById(doctorId);
+    if (options.session) {
+        query.session(options.session);
+    }
+    return query.exec();
+};
+
+const buildScheduleSnapshot = (doctor) => ({
+    doctorId: doctor?._id || null,
+    workingDays: getNormalizedWorkingDays(doctor),
+    workingHours: doctor?.workingHours || null,
+    consultationDuration: doctor?.defaultConsultTime || null,
+    maxPatientsPerDay: doctor?.maxPatientsPerDay || null,
+    breakSlots: doctor?.breakSlots || [],
+    isActive: doctor?.isActive !== false,
+    inactiveFrom: doctor?.inactiveFrom || null,
+    inactiveUntil: doctor?.inactiveUntil || null,
+    inactiveReason: doctor?.inactiveReason || '',
+});
+
+/**
+ * Generate available time slots for a doctor on a specific date.
+ * Returns schedule metadata so callers can explain why a day is unavailable.
+ */
+const generateSlots = async (doctorId, date, options = {}) => {
+    const doctor = await getDoctorById(doctorId, options);
+    const availability = getDoctorAvailabilityForDate(doctor, date);
+
+    if (!doctor) {
+        throw new Error('Doctor not found');
+    }
+
+    if (!isDoctorConfigured(doctor)) {
         throw new Error('Doctor has not fully configured their schedule');
     }
 
-    // 3. Normalize date to midnight UTC
-    const normalizedDate = normalizeDate(date);
+    if (!availability.available) {
+        return {
+            slots: [],
+            availability,
+            schedule: buildScheduleSnapshot(doctor),
+        };
+    }
 
-    // 4. Parse working hours to full Date objects
-    const workStart = parseTimeString(
-        doctor.workingHours.start,
-        normalizedDate
-    );
+    const normalizedDate = availability.normalizedDate;
+    const workStart = parseTimeString(doctor.workingHours.start, normalizedDate);
     const workEnd = parseTimeString(doctor.workingHours.end, normalizedDate);
-
-    // 5. Parse break slots to full Date objects
-    const breaks = (doctor.breakSlots || []).map((br) => ({
-        start: parseTimeString(br.start, normalizedDate),
-        end: parseTimeString(br.end, normalizedDate),
-    }));
-
-    // 6. Generate all possible slots
+    const breaks = buildBreakRanges(doctor, normalizedDate);
     const slots = [];
     let currentTime = new Date(workStart);
-    const consultTimeMs = doctor.defaultConsultTime * 60 * 1000;
 
-    while (currentTime.getTime() + consultTimeMs <= workEnd.getTime()) {
+    while (currentTime < workEnd) {
         const slotEnd = addMinutes(currentTime, doctor.defaultConsultTime);
+        if (slotEnd > workEnd) {
+            break;
+        }
 
-        // Check if slot overlaps with any break
-        const overlapsBreak = breaks.some((br) =>
+        const overlappingBreak = breaks.find((br) =>
             hasOverlap(currentTime, slotEnd, br.start, br.end)
         );
 
-        if (!overlapsBreak) {
+        if (!overlappingBreak) {
             slots.push({
                 slotStart: new Date(currentTime).toISOString(),
                 slotEnd: new Date(slotEnd).toISOString(),
                 status: 'available',
+                reasonCode: 'available',
             });
         }
 
-        currentTime = new Date(slotEnd);
+        currentTime = slotEnd;
     }
 
-    // 7. Fetch existing appointments (only booked and in_progress)
-    // CRITICAL: Cancelled appointments must NOT block slots
-    const existingAppointments = await Appointment.find({
+    const appointmentQuery = Appointment.find({
         doctorId,
         date: normalizedDate,
-        status: { $in: ['booked', 'waiting', 'in_progress'] },
-    }).lean();
+        status: { $in: ACTIVE_APPOINTMENT_STATUSES },
+    }).select('slotStart status');
 
-    // 8. Mark slots as booked if already taken
-    slots.forEach((slot) => {
-        const isBooked = existingAppointments.some(
-            (apt) => new Date(apt.slotStart).getTime() === new Date(slot.slotStart).getTime()
-        );
-        if (isBooked) slot.status = 'booked';
+    if (options.session) {
+        appointmentQuery.session(options.session);
+    }
+
+    const existingAppointments = await appointmentQuery.lean();
+    const bookedStartTimes = new Set(
+        existingAppointments.map((appointment) => new Date(appointment.slotStart).toISOString())
+    );
+    const appointmentCount = existingAppointments.length;
+    const remainingCapacity = Math.max(0, doctor.maxPatientsPerDay - appointmentCount);
+
+    const hydratedSlots = slots.map((slot) => {
+        if (bookedStartTimes.has(slot.slotStart)) {
+            return {
+                ...slot,
+                status: 'booked',
+                reasonCode: 'slot_booked',
+            };
+        }
+
+        if (appointmentCount >= doctor.maxPatientsPerDay) {
+            return {
+                ...slot,
+                status: 'unavailable',
+                reasonCode: 'daily_limit_reached',
+            };
+        }
+
+        return slot;
     });
 
-    return slots;
+    return {
+        slots: hydratedSlots,
+        availability: {
+            ...availability,
+            appointmentCount,
+            remainingCapacity,
+        },
+        schedule: buildScheduleSnapshot(doctor),
+    };
 };
 
 /**
- * Check if a specific slot is available for booking
- * @param {string} doctorId - Doctor's MongoDB ID
- * @param {Date} date - Normalized date
- * @param {Date} slotStart - Start time of slot
- * @param {Date} slotEnd - End time of slot
- * @returns {Promise<Object>} - { available: boolean, message: string }
+ * Check if a specific slot is available for booking.
  */
-const checkSlotAvailability = async (doctorId, date, slotStart, slotEnd) => {
-    // 1. Fetch doctor configuration
-    const doctor = await Doctor.findById(doctorId);
+const checkSlotAvailability = async (doctorId, date, slotStart, slotEnd, options = {}) => {
+    const doctor = await getDoctorById(doctorId, options);
 
-    // 2. Validate complete doctor configuration
-    if (
-        !doctor ||
-        !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay || !doctor.isConfigured
-    ) {
+    if (!doctor || !isDoctorConfigured(doctor)) {
         return {
             available: false,
             message: 'Doctor has not fully configured their schedule',
+            reasonCode: 'schedule_not_configured',
         };
     }
 
-    // 3. Normalize date
     const normalizedDate = normalizeDate(date);
-
-    // 4. Validate same day
     const slotDay = normalizeDate(slotStart);
     if (slotDay.getTime() !== normalizedDate.getTime()) {
         return {
             available: false,
             message: 'Slot date does not match booking date',
+            reasonCode: 'slot_date_mismatch',
         };
     }
 
-    // 5. Parse working hours
-    const workStart = parseTimeString(
-        doctor.workingHours.start,
-        normalizedDate
-    );
-    const workEnd = parseTimeString(doctor.workingHours.end, normalizedDate);
-
-    // 6. Check slot is within working hours
-    if (slotStart < workStart || slotEnd > workEnd) {
-        return {
-            available: false,
-            message: 'Slot is outside doctor working hours',
-        };
-    }
-
-    // 7. Check slot doesn't overlap with breaks
-    const breaks = (doctor.breakSlots || []).map((br) => ({
-        start: parseTimeString(br.start, normalizedDate),
-        end: parseTimeString(br.end, normalizedDate),
-    }));
-
-    const overlapsBreak = breaks.some((br) =>
-        hasOverlap(slotStart, slotEnd, br.start, br.end)
-    );
-
-    if (overlapsBreak) {
-        return {
-            available: false,
-            message: 'Slot overlaps with doctor break time',
-        };
-    }
-
-    // 8. Check slot not already booked
-    const existingAppointment = await Appointment.findOne({
-        doctorId,
-        date: normalizedDate,
-        slotStart,
-        status: { $in: ['booked', 'waiting', 'in_progress'] },
+    const result = await generateSlots(doctorId, normalizedDate, {
+        ...options,
+        doctorDoc: doctor,
     });
 
-    if (existingAppointment) {
+    if (!result.availability.available) {
         return {
             available: false,
-            message: 'This slot is already booked',
+            message: result.availability.message,
+            reasonCode: result.availability.reasonCode,
+            schedule: result.schedule,
         };
     }
 
-    // 9. Check daily capacity not reached
-    const appointmentsCount = await Appointment.countDocuments({
-        doctorId,
-        date: normalizedDate,
-        status: { $in: ['booked', 'waiting', 'in_progress'] },
-    });
+    const matchingSlot = result.slots.find((slot) =>
+        new Date(slot.slotStart).getTime() === new Date(slotStart).getTime() &&
+        new Date(slot.slotEnd).getTime() === new Date(slotEnd).getTime()
+    );
 
-    if (appointmentsCount >= doctor.maxPatientsPerDay) {
+    if (!matchingSlot) {
         return {
             available: false,
-            message: 'Doctor has reached maximum appointments for this day',
+            message: 'Selected slot is not part of the doctor schedule',
+            reasonCode: 'slot_not_generated',
+            schedule: result.schedule,
+        };
+    }
+
+    if (matchingSlot.status !== 'available') {
+        const messageByReason = {
+            slot_booked: 'This slot is already booked',
+            daily_limit_reached: 'Doctor has reached maximum appointments for this day',
+        };
+
+        return {
+            available: false,
+            message: messageByReason[matchingSlot.reasonCode] || 'This slot is not available',
+            reasonCode: matchingSlot.reasonCode,
+            schedule: result.schedule,
         };
     }
 
     return {
         available: true,
         message: 'Slot is available',
+        reasonCode: 'available',
+        normalizedDate,
+        doctor,
+        schedule: result.schedule,
     };
 };
 
+/**
+ * Find the next bookable slot from a starting date.
+ */
+const findNextAvailableSlot = async (doctorId, startDate, options = {}) => {
+    const doctor = await getDoctorById(doctorId, options);
+    if (!doctor || !isDoctorConfigured(doctor)) {
+        return null;
+    }
+
+    const searchWindowDays = options.searchWindowDays || 30;
+    const start = new Date(startDate);
+
+    for (let index = 0; index < searchWindowDays; index += 1) {
+        const candidateDate = new Date(start.getTime());
+        candidateDate.setUTCDate(candidateDate.getUTCDate() + index);
+
+        const slotResult = await generateSlots(doctorId, candidateDate, {
+            ...options,
+            doctorDoc: doctor,
+        });
+
+        if (!slotResult.availability.available) {
+            continue;
+        }
+
+        const firstAvailableSlot = slotResult.slots.find((slot) => {
+            if (slot.status !== 'available') {
+                return false;
+            }
+
+            if (index === 0 && new Date(slot.slotStart) < start) {
+                return false;
+            }
+
+            return true;
+        });
+
+        if (firstAvailableSlot) {
+            return {
+                ...firstAvailableSlot,
+                date: slotResult.availability.normalizedDate,
+                schedule: slotResult.schedule,
+            };
+        }
+    }
+
+    return null;
+};
+
 module.exports = {
+    ACTIVE_APPOINTMENT_STATUSES,
+    isDoctorConfigured,
+    getNormalizedWorkingDays,
+    isDoctorInactiveOnDate,
+    getDoctorAvailabilityForDate,
+    buildScheduleSnapshot,
     generateSlots,
     checkSlotAvailability,
+    findNextAvailableSlot,
 };

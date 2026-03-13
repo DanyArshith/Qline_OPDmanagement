@@ -5,6 +5,7 @@ const { verifyToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roleCheck');
 const {
     configureSchedule,
+    updateAvailabilityStatus,
     getMySchedule,
     getAvailableSlots,
     getTodayAppointments,
@@ -56,12 +57,53 @@ router.post(
         body('maxPatientsPerDay')
             .isInt({ min: 1, max: 200 })
             .withMessage('Max patients per day must be between 1 and 200'),
+        body('workingDays')
+            .optional()
+            .isArray({ min: 1 })
+            .withMessage('Working days must be a non-empty array'),
+        body('breakSlots')
+            .optional()
+            .isArray()
+            .withMessage('Break slots must be an array'),
         body('department')
             .optional()
             .isString()
             .withMessage('Department must be a string'),
     ]),
     configureSchedule
+);
+
+/**
+ * @route   PATCH /api/doctors/availability
+ * @desc    Update doctor active/inactive status and unavailability window
+ * @access  Private (Doctor only)
+ */
+router.patch(
+    '/availability',
+    verifyToken,
+    requireRole(['doctor']),
+    validate([
+        body('isActive')
+            .isBoolean()
+            .withMessage('isActive must be a boolean'),
+        body('inactiveFrom')
+            .optional({ nullable: true })
+            .isISO8601()
+            .withMessage('inactiveFrom must be a valid ISO 8601 date'),
+        body('inactiveUntil')
+            .optional({ nullable: true })
+            .isISO8601()
+            .withMessage('inactiveUntil must be a valid ISO 8601 date'),
+        body('inactiveReason')
+            .optional()
+            .isString()
+            .withMessage('inactiveReason must be a string'),
+        body('handlingMode')
+            .optional()
+            .isIn(['reschedule', 'cancel'])
+            .withMessage('handlingMode must be either reschedule or cancel'),
+    ]),
+    updateAvailabilityStatus
 );
 
 /**

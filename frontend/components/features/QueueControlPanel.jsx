@@ -18,6 +18,7 @@ export default function QueueControlPanel({
 }) {
     const [confirm, setConfirm] = useState(null) // { action, label }
     const isPaused = queueState?.status === 'paused'
+    const waitingCount = queueState?.waitingCount ?? queueState?.counts?.waiting ?? 0
 
     const handleAction = (action) => {
         const map = {
@@ -39,7 +40,7 @@ export default function QueueControlPanel({
                 {/* Live stats */}
                 <div className="grid grid-cols-3 gap-0 divide-x divide-border text-center">
                     <StatCell label="Serving" value={queueState?.currentToken ?? '—'} />
-                    <StatCell label="Waiting" value={queueState?.waitingCount ?? 0} />
+                    <StatCell label="Waiting" value={waitingCount} />
                     <StatCell
                         label="Status"
                         value={
