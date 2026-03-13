@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import api from '@/lib/api'
 import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
-import { formatDateTime, formatTime } from '@/lib/utils'
+import { formatDateTime, formatTime, drName } from '@/lib/utils'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
@@ -72,7 +72,7 @@ export default function AppointmentDetailPage() {
         )
     }
 
-    const doctorName = appointment.doctorId?.name || 'Doctor'
+    const doctorName = drName(appointment.doctorId?.name)
     const doctorDepartment = appointment.doctorId?.department || 'General'
     const slotStart = appointment.slotStart || appointment.date
     const slotEnd = appointment.slotEnd
@@ -97,7 +97,7 @@ export default function AppointmentDetailPage() {
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="rounded-lg border border-border bg-bg p-4">
                         <p className="text-caption text-text-secondary">Doctor</p>
-                        <p className="text-body font-semibold text-text-primary">Dr. {doctorName}</p>
+                        <p className="text-body font-semibold text-text-primary">{doctorName}</p>
                         <p className="text-caption text-text-secondary">{doctorDepartment}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg p-4">

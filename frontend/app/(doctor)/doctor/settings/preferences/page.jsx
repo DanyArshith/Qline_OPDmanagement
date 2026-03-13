@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import api from '@/lib/api'
 import { useToast } from '@/hooks/useToast'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
@@ -32,9 +33,14 @@ export default function DoctorPreferencesPage() {
 
     const save = async () => {
         setSaving(true)
-        await new Promise(r => setTimeout(r, 400))
-        toast.success('Preferences saved')
-        setSaving(false)
+        try {
+            await api.put('/api/settings/preferences', { preferences: prefs })
+            toast.success('Preferences saved')
+        } catch {
+            toast.error('Failed to save preferences')
+        } finally {
+            setSaving(false)
+        }
     }
 
     return (

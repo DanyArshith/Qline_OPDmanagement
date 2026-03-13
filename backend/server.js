@@ -7,28 +7,21 @@ const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
 
-// Phase 4: Infrastructure imports
+// Config and utilities
 const logger = require('./utils/logger');
 const Sentry = require('./config/sentry');
-const redisClient = require('./config/redis');
-const { createAdapter } = require('@socket.io/redis-adapter');
 const { apiLimiter, strictLimiter } = require('./middleware/rateLimiter');
-
-// Config and middleware
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
 const socketAuth = require('./middleware/socketAuth');
 const setupSocket = require('./sockets/queueSocket');
 const { verifyAndInitializeData } = require('./utils/dataPersistenceCheck');
 
-
 // Import routes
 const authRoutes = require('./routes/auth');
 const doctorRoutes = require('./routes/doctor');
 const appointmentRoutes = require('./routes/appointment');
 const queueRoutes = require('./routes/queue');
-
-// Phase 4: New routes
 const notificationRoutes = require('./routes/notification');
 const medicalRecordRoutes = require('./routes/medicalRecord');
 const analyticsRoutes = require('./routes/analytics');
@@ -39,17 +32,16 @@ const patientRoutes = require('./routes/patient');
 const supportRoutes = require('./routes/support');
 const errorRoutes = require('./routes/error');
 
-
 // Initialize Express
 const app = express();
 const server = http.createServer(app);
 
-// Phase 4: Sentry request handler (must be first)
+// Sentry request handler (production only)
 if (process.env.NODE_ENV === 'production' && process.env.SENTRY_DSN) {
     app.use(Sentry.Handlers.requestHandler());
 }
 
-// Initialize Socket.IO
+// Initialize Socket.IO (no Redis adapter — single server)
 const io = new Server(server, {
     cors: {
         origin: process.env.FRONTEND_URL || 'http://localhost:3000',
@@ -58,49 +50,26 @@ const io = new Server(server, {
     },
 });
 
-// Phase 4: Setup Redis adapter for Socket.IO horizontal scaling
-const setupRedisAdapter = async () => {
-    // Only setup if Redis is available
-    if (!redisClient) {
-        logger.info('ℹ️  Socket.IO running without Redis adapter (single server mode)');
-        return;
-    }
-
-    try {
-        const pubClient = redisClient.duplicate();
-        const subClient = redisClient.duplicate();
-
-        io.adapter(createAdapter(pubClient, subClient));
-        logger.info('✅ Socket.IO Redis adapter initialized');
-    } catch (error) {
-        logger.error('Failed to setup Redis adapter:', error.message);
-        logger.warn('⚠️  Socket.IO running without Redis adapter (single server mode)');
-    }
-};
-
-setupRedisAdapter();
-
 // Socket.IO Authentication Middleware
 io.use(socketAuth);
 
 // Expose io globally so workers running in the same process can emit events
-// (in multi-process/Docker mode, Socket.IO Redis adapter handles cross-process emit)
 global.io = io;
 
 // Connect to MongoDB
 connectDB();
 
 // Middleware
-app.use(helmet()); // Security headers
+app.use(helmet());
 app.use(cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
 }));
 app.use(cookieParser());
-app.use(express.json()); // Body parser
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Phase 4: Apply rate limiting to all API routes
+// Rate limiting
 app.use('/api/', apiLimiter);
 
 // Make io accessible in routes
@@ -110,8 +79,9 @@ app.set('io', io);
 app.get('/', (req, res) => {
     res.json({
         message: 'Qline API - OPD Queue Management System',
-        version: '1.0.0',
+        version: '2.0.0',
         status: 'running',
+        database: 'MongoDB (no Redis/Docker)',
         availableEndpoints: {
             health: '/health',
             auth: '/api/auth',
@@ -132,12 +102,10 @@ app.get('/', (req, res) => {
 });
 
 // Routes
-app.use('/api/auth', strictLimiter, authRoutes); // Strict rate limiting on auth
+app.use('/api/auth', strictLimiter, authRoutes);
 app.use('/api/doctors', doctorRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/queue', queueRoutes);
-
-// Phase 4: New routes
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/medical-records', medicalRecordRoutes);
 app.use('/api/analytics', analyticsRoutes);
@@ -148,8 +116,7 @@ app.use('/api/patient', patientRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/errors', errorRoutes);
 
-
-// Phase 4: Enhanced health check route
+// Health check (MongoDB only)
 app.get('/health', async (req, res) => {
     const health = {
         status: 'ok',
@@ -157,12 +124,10 @@ app.get('/health', async (req, res) => {
         uptime: process.uptime(),
         environment: process.env.NODE_ENV || 'development',
         services: {
-            mongodb: 'checking',
-            redis: 'checking'
+            mongodb: 'checking'
         }
     };
 
-    // Check MongoDB
     try {
         if (mongoose.connection.readyState === 1) {
             await mongoose.connection.db.admin().ping();
@@ -177,20 +142,6 @@ app.get('/health', async (req, res) => {
         logger.error('MongoDB health check failed:', error);
     }
 
-    // Check Redis
-    if (redisClient) {
-        try {
-            await redisClient.ping();
-            health.services.redis = 'connected';
-        } catch (error) {
-            health.services.redis = 'disconnected';
-            health.status = 'degraded';
-            logger.error('Redis health check failed:', error);
-        }
-    } else {
-        health.services.redis = 'not_configured';
-    }
-
     const statusCode = health.status === 'ok' ? 200 : 503;
     res.status(statusCode).json(health);
 });
@@ -201,7 +152,7 @@ app.use((req, res, next) => {
     next(new Error(`Route not found: ${req.originalUrl}`));
 });
 
-// Phase 4: Sentry error handler (after routes, before custom error handler)
+// Sentry error handler (after routes, before custom error handler)
 if (process.env.NODE_ENV === 'production' && process.env.SENTRY_DSN) {
     app.use(Sentry.Handlers.errorHandler());
 }
@@ -212,103 +163,48 @@ app.use(errorHandler);
 // Setup Socket.IO
 setupSocket(io);
 
-// Phase 5: BullMQ & Scheduled Tasks
-const { createBullBoard } = require('@bull-board/api');
-const { BullMQAdapter } = require('@bull-board/api/bullMQAdapter');
-const { ExpressAdapter } = require('@bull-board/express');
-
-const emailQueue = require('./queues/emailQueue');
-const reminderQueue = require('./queues/reminderQueue');
-const analyticsQueue = require('./queues/analyticsQueue');
-const notificationQueue = require('./queues/notificationQueue');
+// Schedule analytics jobs via cron (MongoDB-based, no Redis)
 const analyticsService = require('./services/analyticsService');
-
-// Initialize Bull Board
-const serverAdapter = new ExpressAdapter();
-serverAdapter.setBasePath('/admin/queues');
-
-createBullBoard({
-    queues: [
-        new BullMQAdapter(emailQueue),
-        new BullMQAdapter(reminderQueue),
-        new BullMQAdapter(analyticsQueue),
-        new BullMQAdapter(notificationQueue)
-    ],
-    serverAdapter
-});
-
-// Mount Bull Board (Admin only)
-const authMiddleware = require('./middleware/auth');
-const roleCheck = require('./middleware/roleCheck');
-const ipWhitelist = require('./middleware/ipWhitelist');
-
-// Parse allowed IPs from env
-const allowedAdminIps = process.env.ADMIN_IP_WHITELIST ?
-    process.env.ADMIN_IP_WHITELIST.split(',') : [];
-
-app.use(
-    '/admin/queues',
-    authMiddleware.verifyToken,
-    roleCheck.requireRole(['admin']),
-    // Only enforce IP whitelist if configured
-    (req, res, next) => {
-        if (allowedAdminIps.length > 0) {
-            return ipWhitelist(allowedAdminIps)(req, res, next);
-        }
-        next();
-    },
-    serverAdapter.getRouter()
+analyticsService.scheduleDailyAnalytics().catch(err =>
+    logger.error('Failed to schedule analytics:', err)
 );
 
-// Schedule recurring jobs
-const scheduleSystemJobs = async () => {
-    try {
-        // Schedule daily analytics
-        await analyticsService.scheduleDailyAnalytics();
-        logger.info('📅 valid system jobs scheduled');
-    } catch (err) {
-        logger.error('Failed to schedule system jobs:', err);
-    }
-};
-
-// Start workers in API process only when explicitly enabled, or by default in development.
+// Start embedded workers (always in development; opt-in for production)
 const shouldRunEmbeddedWorkers =
     process.env.RUN_WORKERS_IN_API === 'true' ||
     (!process.env.RUN_WORKERS_IN_API && (process.env.NODE_ENV || 'development') !== 'production');
 
 if (shouldRunEmbeddedWorkers) {
-    require('./workers/emailWorker');
-    require('./workers/reminderWorker');
-    require('./workers/analyticsWorker');
-    require('./workers/notificationWorker');
-    logger.info('Embedded BullMQ workers started');
+    const { startEmailWorker } = require('./workers/emailWorker');
+    const { startReminderWorker } = require('./workers/reminderWorker');
+    const { startAnalyticsWorker } = require('./workers/analyticsWorker');
+    const { startNotificationWorker } = require('./workers/notificationWorker');
+
+    startEmailWorker();
+    startReminderWorker();
+    startAnalyticsWorker();
+    startNotificationWorker();
+
+    logger.info('✅ Embedded MongoDB-backed workers started');
 } else {
-    logger.info('Embedded workers disabled (expecting standalone worker process)');
+    logger.info('ℹ️  Embedded workers disabled (expecting standalone worker process)');
 }
 
+// Cache warmer (now only memory cache — no Redis)
 const { warmCache } = require('./utils/cacheWarmer');
 const { ensureIndexes } = require('./utils/dbOptimizer');
 
-scheduleSystemJobs();
-// Initialize indexes + cache warmer concurrently (non-blocking)
-Promise.all([
-    warmCache(),
-    ensureIndexes()
-]).then(() => {
-    logger.info('✨ System ready (indexes ensured, cache warmed)');
-}).catch(err => {
-    logger.error('Startup tasks failed (non-fatal):', err.message);
-});
-
+Promise.all([warmCache(), ensureIndexes()])
+    .then(() => logger.info('✨ System ready (indexes ensured, cache warmed)'))
+    .catch(err => logger.error('Startup tasks failed (non-fatal):', err.message));
 
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', async () => {
     logger.info(`🚀 Server running on port ${PORT}`);
     logger.info(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-    logger.info(`⏰ Cron jobs initialized`);
-    
-    // Verify data persistence
+    logger.info(`🗄️  Database: MongoDB (no Redis, no Docker)`);
+
     try {
         await verifyAndInitializeData();
     } catch (error) {
@@ -316,7 +212,6 @@ server.listen(PORT, '0.0.0.0', async () => {
     }
 });
 
-// Add server error handler
 server.on('error', (err) => {
     logger.error('Server error:', err);
     if (err.code === 'EADDRINUSE') {
@@ -331,12 +226,8 @@ process.on('SIGTERM', async () => {
     server.close(async () => {
         logger.info('HTTP server closed');
         await mongoose.connection.close();
-        if (redisClient) {
-            await redisClient.quit();
-        }
         process.exit(0);
     });
 });
 
 module.exports = { app, server, io };
-

@@ -1,134 +1,125 @@
-const { Worker } = require('bullmq');
-const redisClient = require('../config/redis');
+/**
+ * Email Worker — MongoDB-based (Redis/BullMQ removed)
+ * Polls the MongoDB job queue and processes email jobs.
+ */
+const { claimNextJob, completeJob, failJob } = require('../models/JobQueue');
 const EmailLog = require('../models/EmailLog');
-const sgMail = require('@sendgrid/mail');
-const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
 
-// Initialize SendGrid
+let sgMail = null;
+let smtpTransporter = null;
+
+// Initialize email providers
 if (process.env.SENDGRID_API_KEY) {
-    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+    try {
+        sgMail = require('@sendgrid/mail');
+        sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+        logger.info('✅ SendGrid initialized for email worker');
+    } catch (e) {
+        logger.warn('SendGrid not available:', e.message);
+    }
 }
 
-// Initialize SMTP
-let smtpTransporter = null;
 if (process.env.SMTP_HOST) {
-    smtpTransporter = nodemailer.createTransporter({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT) || 587,
-        secure: process.env.SMTP_SECURE === 'true',
-        auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS
-        }
-    });
+    try {
+        const nodemailer = require('nodemailer');
+        smtpTransporter = nodemailer.createTransporter({
+            host: process.env.SMTP_HOST,
+            port: parseInt(process.env.SMTP_PORT) || 587,
+            secure: process.env.SMTP_SECURE === 'true',
+            auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+        });
+        logger.info('✅ SMTP transporter initialized for email worker');
+    } catch (e) {
+        logger.warn('SMTP not available:', e.message);
+    }
 }
 
 /**
- * Email Worker
- * Processes jobs from the 'email' queue
+ * Process a single email job
  */
-const emailWorker = new Worker('email', async (job) => {
+async function processEmailJob(job) {
     const { to, subject, html, text, emailLogId } = job.data;
-    const logPrefix = `[EmailJob ${job.id}]`;
-
-    logger.debug(`${logPrefix} Processing email to ${to}`);
+    logger.debug(`[EmailWorker] Processing email to ${to}`);
 
     try {
-        // 1. Try SendGrid
-        if (process.env.SENDGRID_API_KEY) {
-            try {
-                const msg = {
-                    to,
-                    from: process.env.FROM_EMAIL || 'noreply@qline.com',
-                    subject,
-                    text: text || subject,
-                    html
-                };
+        let provider = null;
 
-                await sgMail.send(msg);
-
-                // Update log
-                if (emailLogId) {
-                    await EmailLog.findByIdAndUpdate(emailLogId, {
-                        status: 'sent',
-                        sentAt: new Date(),
-                        provider: 'sendgrid',
-                        attempts: job.attemptsMade + 1,
-                        lastAttemptAt: new Date()
-                    });
-                }
-
-                logger.info(`${logPrefix} Sent via SendGrid to ${to}`);
-                return { success: true, provider: 'sendgrid' };
-            } catch (sgError) {
-                logger.warn(`${logPrefix} SendGrid failed: ${sgError.message}. Trying fallback if available.`);
-                // Continue to SMTP fallback
-            }
-        }
-
-        // 2. Fallback to SMTP
-        if (smtpTransporter) {
-            await smtpTransporter.sendMail({
-                from: process.env.FROM_EMAIL || 'noreply@qline.com',
+        if (sgMail) {
+            await sgMail.send({
                 to,
+                from: process.env.FROM_EMAIL || 'noreply@qline.com',
                 subject,
                 text: text || subject,
                 html
             });
-
-            // Update log
-            if (emailLogId) {
-                await EmailLog.findByIdAndUpdate(emailLogId, {
-                    status: 'sent',
-                    sentAt: new Date(),
-                    provider: 'smtp',
-                    attempts: job.attemptsMade + 1,
-                    lastAttemptAt: new Date()
-                });
-            }
-
-            logger.info(`${logPrefix} Sent via SMTP to ${to}`);
-            return { success: true, provider: 'smtp' };
+            provider = 'sendgrid';
+        } else if (smtpTransporter) {
+            await smtpTransporter.sendMail({
+                from: process.env.FROM_EMAIL || 'noreply@qline.com',
+                to, subject,
+                text: text || subject,
+                html
+            });
+            provider = 'smtp';
+        } else {
+            // Dev mode: log email instead of sending
+            logger.info(`[EmailWorker] DEV MODE — Email to ${to}: "${subject}" (no provider configured)`);
+            provider = 'dev_log';
         }
 
-        // No provider available
-        throw new Error('No email provider configured (SendGrid or SMTP)');
-
-    } catch (error) {
-        // Update log with failure
         if (emailLogId) {
             await EmailLog.findByIdAndUpdate(emailLogId, {
-                status: 'failed',
-                error: error.message,
-                attempts: job.attemptsMade + 1,
-                lastAttemptAt: new Date()
+                status: 'sent',
+                sentAt: new Date(),
+                provider,
+                attempts: job.attempts
             });
         }
 
-        logger.error(`${logPrefix} Failed: ${error.message}`);
-        throw error; // Throw so BullMQ knows to retry
+        await completeJob(job._id, { provider });
+        logger.info(`[EmailWorker] Sent via ${provider} to ${to}`);
+
+    } catch (error) {
+        if (emailLogId) {
+            await EmailLog.findByIdAndUpdate(emailLogId, {
+                status: job.attempts >= job.maxAttempts ? 'failed' : 'queued',
+                error: error.message,
+                attempts: job.attempts
+            }).catch(() => { });
+        }
+        await failJob(job._id, error);
+        logger.error(`[EmailWorker] Failed: ${error.message}`);
     }
-}, {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    concurrency: parseInt(process.env.EMAIL_WORKER_CONCURRENCY) || 5,
-    limiter: {
-        max: 10,
-        duration: 1000 // Max 10 emails per second
-    }
-});
+}
 
-// Event listeners
-emailWorker.on('completed', (job) => {
-    logger.debug(`Email job ${job.id} completed`);
-});
+/**
+ * Start the email worker polling loop
+ */
+let emailWorkerRunning = false;
 
-emailWorker.on('failed', (job, err) => {
-    logger.error(`Email job ${job.id} failed: ${err.message}`);
-});
+function startEmailWorker() {
+    if (emailWorkerRunning) return;
+    emailWorkerRunning = true;
+    logger.info('📧 Email worker started (MongoDB-backed)');
 
-module.exports = emailWorker;
+    const poll = async () => {
+        try {
+            const job = await claimNextJob('email');
+            if (job) {
+                await processEmailJob(job);
+                // Process next immediately if there was work
+                setImmediate(poll);
+                return;
+            }
+        } catch (err) {
+            logger.error('[EmailWorker] Poll error:', err.message);
+        }
+        // No jobs — wait before polling again
+        setTimeout(poll, 5000);
+    };
+
+    poll();
+}
+
+module.exports = { startEmailWorker };

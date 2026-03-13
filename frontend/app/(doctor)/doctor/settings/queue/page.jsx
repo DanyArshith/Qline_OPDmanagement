@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import api from '@/lib/api'
 import { useToast } from '@/hooks/useToast'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
@@ -21,9 +22,14 @@ export default function DoctorQueueSettingsPage() {
 
     const save = async () => {
         setSaving(true)
-        await new Promise(r => setTimeout(r, 400))
-        toast.success('Queue settings saved')
-        setSaving(false)
+        try {
+            await api.put('/api/settings/queue', { queueSettings: settings })
+            toast.success('Queue settings saved')
+        } catch {
+            toast.error('Failed to save queue settings')
+        } finally {
+            setSaving(false)
+        }
     }
 
     return (

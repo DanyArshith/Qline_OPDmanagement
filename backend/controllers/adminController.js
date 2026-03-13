@@ -454,3 +454,74 @@ exports.updateSettings = asyncHandler(async (req, res) => {
     logger.info(`Admin ${req.user.userId} updated system settings`);
     res.json({ success: true, settings: merged });
 });
+
+/**
+ * Admin create doctor directly
+ * POST /api/admin/doctors
+ */
+exports.createDoctor = asyncHandler(async (req, res) => {
+    const { name, email, password, department, phone, defaultConsultTime } = req.body;
+    
+    // Create user
+    const user = await User.create({
+        name,
+        email,
+        password,
+        role: 'doctor',
+    });
+    
+    // Create doctor profile
+    const doctor = await Doctor.create({
+        userId: user._id,
+        department: department || 'General',
+        workingHours: { start: '09:00', end: '17:00' },
+        defaultConsultTime: defaultConsultTime || 15,
+        maxPatientsPerDay: 50,
+        isConfigured: false,
+    });
+    
+    res.status(201).json({ success: true, user, doctor });
+});
+
+/**
+ * Admin update doctor
+ * PATCH /api/admin/doctors/:id
+ */
+exports.updateDoctor = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { department, defaultConsultTime } = req.body;
+    
+    const doctor = await Doctor.findByIdAndUpdate(
+        id,
+        { $set: { department, defaultConsultTime } },
+        { new: true }
+    );
+    
+    if (!doctor) {
+        res.status(404);
+        throw new Error('Doctor not found');
+    }
+    
+    res.json({ success: true, doctor });
+});
+
+/**
+ * Admin delete doctor
+ * DELETE /api/admin/doctors/:id
+ */
+exports.deleteDoctor = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    
+    const doctor = await Doctor.findById(id);
+    if (!doctor) {
+        res.status(404);
+        throw new Error('Doctor not found');
+    }
+    
+    await User.findByIdAndDelete(doctor.userId);
+    await Appointment.deleteMany({ doctorId: doctor._id });
+    await DailyQueue.deleteMany({ doctorId: doctor._id });
+    await Doctor.findByIdAndDelete(id);
+    
+    res.json({ success: true, message: 'Doctor deleted' });
+});

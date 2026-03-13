@@ -1,35 +1,22 @@
-const { Queue } = require('bullmq');
+/**
+ * Notification Queue — MongoDB-based (Redis/BullMQ removed)
+ */
+const { addJob } = require('../models/JobQueue');
 const logger = require('../utils/logger');
 
-/**
- * Notification Queue
- * Handles in-app notification delivery
- */
-const notificationQueue = new Queue('notifications', {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    defaultJobOptions: {
-        attempts: 2,
-        backoff: {
-            type: 'fixed',
-            delay: 10000 // 10 seconds
-        },
-        removeOnComplete: {
-            count: 500,
-            age: 86400
-        },
-        removeOnFail: {
-            count: 200,
-            age: 259200
+const notificationQueue = {
+    name: 'notifications',
+
+    async add(type, data, options = {}) {
+        try {
+            const job = await addJob('notifications', type, data, { maxAttempts: options.attempts || 3 });
+            logger.debug(`Notification job queued: ${type} for user ${data.userId}`);
+            return job;
+        } catch (error) {
+            logger.error('Failed to queue notification job:', error.message);
+            throw error;
         }
     }
-});
-
-notificationQueue.on('error', (error) => {
-    logger.error('Notification queue error:', error);
-});
+};
 
 module.exports = notificationQueue;

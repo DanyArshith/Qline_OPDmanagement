@@ -1,31 +1,30 @@
 /**
- * Qline BullMQ Workers - Standalone Process Entrypoint
- * 
- * Run separately in production:
- *   node workers/index.js
- * 
- * Or via docker-compose:
- *   worker service runs this command
+ * Qline Workers — Standalone or embedded process entrypoint
+ * All workers now use MongoDB job queue (Redis/BullMQ removed).
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
-
-// Connect to DB (workers need it for job processing)
 const connectDB = require('../config/db');
+
+// Connect to MongoDB
 connectDB();
 
 // Start all workers
-require('./emailWorker');
-require('./reminderWorker');
-require('./analyticsWorker');
-require('./notificationWorker');
+const { startEmailWorker } = require('./emailWorker');
+const { startReminderWorker } = require('./reminderWorker');
+const { startAnalyticsWorker } = require('./analyticsWorker');
+const { startNotificationWorker } = require('./notificationWorker');
 
-logger.info('🏭 Qline BullMQ Workers started (standalone mode)');
+startEmailWorker();
+startReminderWorker();
+startAnalyticsWorker();
+startNotificationWorker();
 
-// Graceful shutdown
+logger.info('🏭 Qline Workers started (MongoDB-backed, no Redis/BullMQ)');
+
 process.on('SIGTERM', async () => {
     logger.info('Worker SIGTERM received, shutting down gracefully...');
     await mongoose.connection.close();

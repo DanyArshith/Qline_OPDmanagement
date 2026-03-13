@@ -21,6 +21,10 @@ const doctorSchema = new mongoose.Schema(
             default: 50,
             min: [1, 'Must allow at least 1 patient per day'],
         },
+        averageConsultTime: {
+            type: Number,
+            default: 15,
+        },
         workingHours: {
             start: {
                 type: String, // Format: "HH:MM"
@@ -42,6 +46,10 @@ const doctorSchema = new mongoose.Schema(
             default: 'UTC',
             // Common values: 'UTC', 'America/New_York', 'Asia/Kolkata', etc.
             // Defines how to interpret workingHours times
+        },
+        isConfigured: {
+            type: Boolean,
+            default: false,
         },
     },
     {

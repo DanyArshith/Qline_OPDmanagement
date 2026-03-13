@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
@@ -9,19 +10,71 @@ import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
 import Badge from '@/components/ui/Badge'
+import Modal from '@/components/ui/Modal'
+import Input from '@/components/ui/Input'
+import { DEPARTMENTS } from '@/lib/utils'
 
 export default function AdminDoctorDetailPage({ params }) {
     const { id } = params
+    const router = useRouter()
     const toast = useToast()
     const [data, setData] = useState(null)
     const [loading, setLoading] = useState(true)
 
-    useEffect(() => {
-        api.get(`/api/admin/doctors/${id}`)
-            .then(r => setData(r.data))
-            .catch(() => toast.error('Failed to load doctor'))
-            .finally(() => setLoading(false))
-    }, [id, toast])
+    // Edit state
+    const [showEdit, setShowEdit] = useState(false)
+    const [editForm, setEditForm] = useState({ department: '', defaultConsultTime: 15 })
+    const [editing, setEditing] = useState(false)
+
+    // Delete state
+    const [showDelete, setShowDelete] = useState(false)
+    const [deleting, setDeleting] = useState(false)
+
+    const fetchDoctor = async () => {
+        try {
+            const r = await api.get(`/api/admin/doctors/${id}`)
+            setData(r.data)
+            setEditForm({
+                department: r.data.doctor.department || '',
+                defaultConsultTime: r.data.doctor.defaultConsultTime || 15
+            })
+        } catch {
+            toast.error('Failed to load doctor')
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    useEffect(() => { fetchDoctor() }, [id])
+
+    const handleEdit = async (e) => {
+        e.preventDefault()
+        setEditing(true)
+        try {
+            await api.patch(`/api/admin/doctors/${id}`, editForm)
+            toast.success('Doctor updated successfully')
+            setShowEdit(false)
+            fetchDoctor()
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Failed to update doctor')
+        } finally {
+            setEditing(false)
+        }
+    }
+
+    const handleDelete = async () => {
+        setDeleting(true)
+        try {
+            await api.delete(`/api/admin/doctors/${id}`)
+            toast.success('Doctor deleted completely.')
+            router.push('/admin/doctors')
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Failed to delete doctor')
+        } finally {
+            setDeleting(false)
+            setShowDelete(false)
+        }
+    }
 
     if (loading) return <div className="flex justify-center py-24"><Spinner size="lg" className="text-primary" /></div>
     if (!data) return <p className="text-center py-12 text-text-secondary">Doctor not found</p>
@@ -37,10 +90,44 @@ export default function AdminDoctorDetailPage({ params }) {
 
     return (
         <div className="space-y-6 max-w-3xl">
-            <div>
-                <Link href="/admin/doctors" className="text-caption text-primary hover:underline">← Back to Doctors</Link>
-                <h1 className="text-h1 text-text-primary mt-1">Doctor Detail</h1>
+            <div className="flex justify-between items-center gap-4">
+                <div>
+                    <Link href="/admin/doctors" className="text-caption text-primary hover:underline">← Back to Doctors</Link>
+                    <h1 className="text-h1 text-text-primary mt-1">Doctor Detail</h1>
+                </div>
+                <div className="flex gap-2">
+                    <Button variant="secondary" onClick={() => setShowEdit(true)}>Edit</Button>
+                    <Button className="bg-error text-white hover:bg-error/90" onClick={() => setShowDelete(true)}>Delete</Button>
+                </div>
             </div>
+
+            <Modal isOpen={showEdit} onClose={() => setShowEdit(false)} title="Edit Doctor Profile">
+                <form onSubmit={handleEdit} className="space-y-4">
+                    <div>
+                        <label className="block text-caption text-text-secondary mb-1">Department</label>
+                        <select
+                            required value={editForm.department} onChange={e => setEditForm(f => ({ ...f, department: e.target.value }))}
+                            className="w-full h-11 px-4 rounded-md border border-border bg-surface text-body text-text-primary focus:border-primary outline-none"
+                        >
+                            <option value="">Select department...</option>
+                            {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                    </div>
+                    <Input label="Default Consult Time (min)" type="number" min={5} required value={editForm.defaultConsultTime} onChange={e => setEditForm(f => ({ ...f, defaultConsultTime: Number(e.target.value) }))} />
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="secondary" onClick={() => setShowEdit(false)}>Cancel</Button>
+                        <Button type="submit" loading={editing}>Save Changes</Button>
+                    </div>
+                </form>
+            </Modal>
+
+            <Modal isOpen={showDelete} onClose={() => setShowDelete(false)} title="Confirm Delete">
+                <p className="text-body text-text-secondary">Are you sure you want to permanently delete <strong>{doctor.userId?.name}</strong>? This will remove all their appointments and queue history. This action cannot be undone.</p>
+                <div className="flex justify-end gap-2 mt-4">
+                    <Button variant="secondary" onClick={() => setShowDelete(false)}>Cancel</Button>
+                    <Button className="bg-error text-white" loading={deleting} onClick={handleDelete}>Delete Permanently</Button>
+                </div>
+            </Modal>
 
             <Card>
                 <CardHeader>
@@ -61,12 +148,8 @@ export default function AdminDoctorDetailPage({ params }) {
                         <p className="text-body font-medium text-text-primary">{doctor.department ?? '—'}</p>
                     </div>
                     <div>
-                        <p className="text-caption text-text-secondary">Specialization</p>
-                        <p className="text-body font-medium text-text-primary">{doctor.specialization ?? '—'}</p>
-                    </div>
-                    <div>
-                        <p className="text-caption text-text-secondary">Working Days</p>
-                        <p className="text-body text-text-primary">{doctor.workingDays?.join(', ') ?? '—'}</p>
+                        <p className="text-caption text-text-secondary">Default Consult Time</p>
+                        <p className="text-body font-medium text-text-primary">{doctor.defaultConsultTime ?? 15} min</p>
                     </div>
                     <div>
                         <p className="text-caption text-text-secondary">Working Hours</p>

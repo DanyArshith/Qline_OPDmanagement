@@ -1,35 +1,25 @@
-const { Queue } = require('bullmq');
+/**
+ * Reminder Queue — MongoDB-based (Redis/BullMQ removed)
+ */
+const { addJob } = require('../models/JobQueue');
 const logger = require('../utils/logger');
 
-/**
- * Reminder Queue
- * Handles appointment reminder scheduling and delivery
- */
-const reminderQueue = new Queue('reminders', {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    defaultJobOptions: {
-        attempts: 2, // Reminders are time-sensitive, don't retry too much
-        backoff: {
-            type: 'exponential',
-            delay: 30000 // 30 seconds
-        },
-        removeOnComplete: {
-            count: 200,
-            age: 86400
-        },
-        removeOnFail: {
-            count: 100,
-            age: 259200 // 3 days
+const reminderQueue = {
+    name: 'reminders',
+
+    async add(type, data, options = {}) {
+        try {
+            const job = await addJob('reminders', type, data, {
+                maxAttempts: options.attempts || 2,
+                delay: options.delay || 0
+            });
+            logger.debug(`Reminder job queued: ${type}`);
+            return job;
+        } catch (error) {
+            logger.error('Failed to queue reminder job:', error.message);
+            throw error;
         }
     }
-});
-
-reminderQueue.on('error', (error) => {
-    logger.error('Reminder queue error:', error);
-});
+};
 
 module.exports = reminderQueue;

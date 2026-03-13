@@ -6,7 +6,7 @@ import { addDays, format, startOfDay } from 'date-fns'
 import { useParams } from 'next/navigation'
 import api from '@/lib/api'
 import { normalizeApiError, unwrapApiData } from '@/lib/apiClient'
-import { formatTime } from '@/lib/utils'
+import { formatTime, drName } from '@/lib/utils'
 import Button from '@/components/ui/Button'
 import Card, { CardHeader, CardTitle } from '@/components/ui/Card'
 import { ErrorState, LoadingState } from '@/components/ui/AsyncState'
@@ -44,7 +44,7 @@ export default function DoctorDetailPage() {
 
             setDoctor({
                 ...profile,
-                name: profile?.user?.name ?? profile?.userId?.name ?? 'Doctor',
+                name: drName(profile?.user?.name ?? profile?.userId?.name),
                 specialization: profile?.specialization || profile?.department || 'General',
             })
 
@@ -98,7 +98,7 @@ export default function DoctorDetailPage() {
 
             <Card className="space-y-5 p-6">
                 <div>
-                    <h1 className="text-h1 text-text-primary">Dr. {doctor.name}</h1>
+                    <h1 className="text-h1 text-text-primary">{doctor.name}</h1>
                     <p className="text-body text-text-secondary">{doctor.specialization}</p>
                 </div>
 

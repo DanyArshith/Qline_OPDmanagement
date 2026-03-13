@@ -67,6 +67,7 @@ const configureSchedule = asyncHandler(async (req, res) => {
         doctor.breakSlots = breakSlots || [];
         doctor.defaultConsultTime = defaultConsultTime;
         doctor.maxPatientsPerDay = maxPatientsPerDay;
+        doctor.isConfigured = true;
         await doctor.save();
     } else {
         // Create new
@@ -77,6 +78,7 @@ const configureSchedule = asyncHandler(async (req, res) => {
             breakSlots: breakSlots || [],
             defaultConsultTime,
             maxPatientsPerDay,
+            isConfigured: true,
         });
     }
 
@@ -95,6 +97,7 @@ const configureSchedule = asyncHandler(async (req, res) => {
             breakSlots: doctor.breakSlots,
             defaultConsultTime: doctor.defaultConsultTime,
             maxPatientsPerDay: doctor.maxPatientsPerDay,
+            isConfigured: doctor.isConfigured,
         },
     });
 });
@@ -121,6 +124,7 @@ const getMySchedule = asyncHandler(async (req, res) => {
             breakSlots: doctor.breakSlots,
             defaultConsultTime: doctor.defaultConsultTime,
             maxPatientsPerDay: doctor.maxPatientsPerDay,
+            isConfigured: doctor.isConfigured,
         },
     });
 });
@@ -258,22 +262,12 @@ const searchDoctors = asyncHandler(async (req, res) => {
             });
 
             // Average based on doctor's consultation time and historical data
-            // Formula: avgConsultTime * (waitingCount + 1) to estimate total wait
-            let estimatedWaitTime = d.defaultConsultTime * (waitingCount + 1);
+            // Formula: Number of Patients in Queue * Average Consultation Time
+            const avgTime = d.averageConsultTime || d.defaultConsultTime || 15;
+            let estimatedWaitTime = avgTime * waitingCount;
             
-            // Cap at 120 minutes max estimate
-            estimatedWaitTime = Math.min(estimatedWaitTime, 120);
-
-            // Get current hour for more accurate estimation
-            const currentHour = new Date().getHours();
-            try {
-                const hourlyWaitTime = await getAverageWaitTimeByHour(d._id, currentHour);
-                if (hourlyWaitTime) {
-                    estimatedWaitTime = Math.min(estimatedWaitTime, hourlyWaitTime + d.defaultConsultTime * (waitingCount + 1));
-                }
-            } catch (err) {
-                logger.debug('Could not get hourly wait time:', err.message);
-            }
+            // Cap at 180 minutes max estimate (bumped up to be more realistic for busy OPDs)
+            estimatedWaitTime = Math.min(estimatedWaitTime, 180);
 
             return {
                 ...d,
@@ -281,7 +275,7 @@ const searchDoctors = asyncHandler(async (req, res) => {
                 waitingTime: {
                     estimatedWaitMinutes: Math.round(estimatedWaitTime),
                     patientsInQueue: waitingCount,
-                    averageConsultationTime: d.defaultConsultTime,
+                    averageConsultationTime: avgTime,
                     description: `${Math.round(estimatedWaitTime)} min wait • ${waitingCount} in queue`
                 }
             };

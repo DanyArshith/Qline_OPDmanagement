@@ -213,7 +213,7 @@ const callNextPatient = async (doctorId, date, io, req) => {
                 status: 'waiting'
             },
             {
-                $set: { status: 'in_progress' }
+                $set: { status: 'in_progress', consultationStartTime: new Date() }
             },
             {
                 sort: { priority: 1, tokenNumber: 1 }, // priority: emergency < senior < standard
@@ -395,9 +395,23 @@ const markCompleted = async (doctorId, date, io, req) => {
             throw new Error('No patient currently being served');
         }
 
-        // Mark as completed
+                // Mark as completed
         currentAppointment.status = 'completed';
+        currentAppointment.consultationEndTime = new Date();
+        if (currentAppointment.consultationStartTime) {
+            currentAppointment.consultationDuration = Math.max(1, Math.round((currentAppointment.consultationEndTime - currentAppointment.consultationStartTime) / 60000));
+        } else {
+            currentAppointment.consultationDuration = 15;
+        }
         await currentAppointment.save({ session });
+
+        // Update dotor's average consult time
+        const Doctor = require('../models/Doctor');
+        const doctorDoc = await Doctor.findById(doctorId).session(session);
+        if (doctorDoc) {
+            doctorDoc.averageConsultTime = Math.round(((doctorDoc.averageConsultTime || doctorDoc.defaultConsultTime) * 9 + currentAppointment.consultationDuration) / 10);
+            await doctorDoc.save({ session });
+        }
 
         // Update waitingList
         await DailyQueue.findOneAndUpdate(
@@ -423,7 +437,7 @@ const markCompleted = async (doctorId, date, io, req) => {
         // Phase 5.2: Priority-aware ordering
         const nextAppointment = await Appointment.findOneAndUpdate(
             { doctorId, date: normalizedDate, status: 'waiting' },
-            { $set: { status: 'in_progress' } },
+            { $set: { status: 'in_progress', consultationStartTime: new Date() } },
             { sort: { priority: 1, tokenNumber: 1 }, session, new: true }
         ).populate('patientId', 'name email');
 
@@ -582,7 +596,7 @@ const markNoShow = async (doctorId, date, io, req) => {
         // Phase 5.2: Priority-aware ordering
         const nextAppointment = await Appointment.findOneAndUpdate(
             { doctorId, date: normalizedDate, status: 'waiting' },
-            { $set: { status: 'in_progress' } },
+            { $set: { status: 'in_progress', consultationStartTime: new Date() } },
             { sort: { priority: 1, tokenNumber: 1 }, session, new: true }
         ).populate('patientId', 'name email');
 
@@ -776,41 +790,42 @@ const resumeQueue = async (doctorId, date, io) => {
 const getQueueState = async (doctorId, date) => {
     const normalizedDate = normalizeDate(new Date(date));
 
-    const queue = await DailyQueue.findOne({
-        doctorId,
-        date: normalizedDate
-    });
+    let queue = await DailyQueue.findOne({ doctorId, date: normalizedDate });
 
+    // Auto-create queue if no queue exists for this date
     if (!queue) {
-        throw new Error('Queue not found');
+        const apptCount = await Appointment.countDocuments({ doctorId, date: normalizedDate });
+        queue = await DailyQueue.create({
+            doctorId,
+            date: normalizedDate,
+            status: 'active',
+            appointmentCount: apptCount,
+            lastTokenNumber: apptCount,
+            currentToken: null,
+        });
     }
 
-    // Get counts by status
-    const [waiting, inProgress, completed, noShow] = await Promise.all([
+    const [waiting, inProgress, completed, noShow, booked] = await Promise.all([
         Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'waiting' }),
         Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'in_progress' }),
         Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'completed' }),
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'no_show' })
+        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'no_show' }),
+        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'booked' }),
     ]);
 
-    // Get waiting list details
     const waitingList = await Appointment.find({
         doctorId,
         date: normalizedDate,
-        status: 'waiting'
-    })
-        .sort({ tokenNumber: 1 })
-        .select('tokenNumber patientId')
-        .populate('patientId', 'name email');
+        status: { $in: ['waiting', 'booked'] }
+    }).sort({ priority: 1, tokenNumber: 1 })
+      .select('tokenNumber patientId priority')
+      .populate('patientId', 'name email');
 
-    // Get current in-progress
     const currentPatient = await Appointment.findOne({
         doctorId,
         date: normalizedDate,
         status: 'in_progress'
-    })
-        .select('tokenNumber patientId')
-        .populate('patientId', 'name email');
+    }).select('tokenNumber patientId').populate('patientId', 'name email');
 
     return {
         doctorId,
@@ -819,10 +834,10 @@ const getQueueState = async (doctorId, date) => {
         currentToken: queue.currentToken,
         currentPatient: currentPatient ? {
             tokenNumber: currentPatient.tokenNumber,
-            patientName: currentPatient.patientId.name
+            patientName: currentPatient.patientId?.name || 'Patient'
         } : null,
         counts: {
-            waiting,
+            waiting: waiting + booked,
             inProgress,
             completed,
             noShow,
@@ -830,7 +845,8 @@ const getQueueState = async (doctorId, date) => {
         },
         waitingList: waitingList.map(apt => ({
             tokenNumber: apt.tokenNumber,
-            patientName: apt.patientId.name
+            patientName: apt.patientId?.name || 'Patient',
+            priority: apt.priority || 'standard',
         }))
     };
 };

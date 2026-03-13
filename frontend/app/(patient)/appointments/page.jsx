@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import api from '@/lib/api'
 import { normalizeApiError } from '@/lib/apiClient'
-import { formatDate, formatTime, PAGE_SIZE } from '@/lib/utils'
+import { formatDate, formatTime, PAGE_SIZE, drName } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
 import { usePagination } from '@/hooks/usePagination'
 import Badge from '@/components/ui/Badge'
@@ -88,7 +88,7 @@ export default function AppointmentsPage() {
 
                             <div className="min-w-0 flex-1">
                                 <p className="truncate text-body-lg font-semibold text-text-primary">
-                                    Dr. {appointment.doctorId?.name || 'Unknown'}
+                                    {drName(appointment.doctorId?.name)}
                                 </p>
                                 <p className="text-body text-text-secondary">
                                     {(appointment.doctorId?.department || 'General')} | {formatTime(appointment.slotStart)} | Token #{appointment.tokenNumber}

@@ -107,6 +107,16 @@ const register = asyncHandler(async (req, res) => {
     await user.save({ validateBeforeSave: false });
     await queueVerificationEmail(user, verificationToken);
 
+    if (role === 'doctor') {
+        const Doctor = require('../models/Doctor');
+        await Doctor.create({
+            userId: user._id,
+            department: 'Pending...',
+            workingHours: { start: '09:00', end: '17:00' },
+            isConfigured: false,
+        });
+    }
+
     // Generate tokens
     const accessToken = generateAccessToken(user._id, user.role);
     const refreshToken = generateRefreshToken(user._id, user.role);

@@ -1,11 +1,17 @@
 /**
- * Seed database with test data for development
+ * Seed database with comprehensive test data for demo
  * Usage: node scripts/seed-test-data.js
+ * 
+ * Creates:
+ *   - 1 admin
+ *   - 3 patients (john, jane, robert)
+ *   - 4 doctors with fully configured schedules
+ *   - Sample appointments (past, present, future)
+ *   - Daily queues for today
  */
 
 require('dotenv').config();
 const mongoose = require('mongoose');
-const bcrypt = require('bcrypt');
 
 const User = require('../models/User');
 const Doctor = require('../models/Doctor');
@@ -14,202 +20,314 @@ const DailyQueue = require('../models/DailyQueue');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/qline';
 
+function todayMidnightUTC() {
+    const t = new Date();
+    return new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()));
+}
+function daysFromToday(n) {
+    const d = todayMidnightUTC();
+    d.setUTCDate(d.getUTCDate() + n);
+    return d;
+}
+function slotDateTime(baseDate, hh, mm) {
+    return new Date(Date.UTC(
+        baseDate.getUTCFullYear(), baseDate.getUTCMonth(), baseDate.getUTCDate(),
+        hh, mm, 0, 0
+    ));
+}
+
 async function main() {
     try {
         await mongoose.connect(MONGODB_URI);
         console.log('✅ Connected to MongoDB');
 
-        // Clear existing data
+        // ── Clear existing data ────────────────────────────────────────────────
         console.log('🧹 Clearing existing data...');
-        await User.deleteMany({});
-        await Doctor.deleteMany({});
-        await Appointment.deleteMany({});
-        await DailyQueue.deleteMany({});
+        await Promise.all([
+            User.deleteMany({}),
+            Doctor.deleteMany({}),
+            Appointment.deleteMany({}),
+            DailyQueue.deleteMany({}),
+        ]);
         console.log('✅ Data cleared');
 
-        // Create test patients
-        console.log('👨‍⚕️ Creating test patients...');
-        const patients = await User.create([
-            {
-                name: 'John Doe',
-                email: 'john@example.com',
-                password: 'password123',
-                role: 'patient',
-            },
-            {
-                name: 'Jane Smith',
-                email: 'jane@example.com',
-                password: 'password123',
-                role: 'patient',
-            },
-            {
-                name: 'Robert Johnson',
-                email: 'robert@example.com',
-                password: 'password123',
-                role: 'patient',
-            },
+        // ── Admin ────────────────────────────────────────────────────────────
+        const [admin] = await User.create([{
+            name: 'Admin User',
+            email: 'admin@qline.app',
+            password: 'admin123',
+            role: 'admin',
+        }]);
+        console.log(`✅ Created admin: ${admin.email}`);
+
+        // ── Patients ─────────────────────────────────────────────────────────
+        const [john, jane, robert] = await User.create([
+            { name: 'John Doe', email: 'john@example.com', password: 'password123', role: 'patient' },
+            { name: 'Jane Smith', email: 'jane@example.com', password: 'password123', role: 'patient' },
+            { name: 'Robert Johnson', email: 'robert@example.com', password: 'password123', role: 'patient' },
         ]);
-        console.log(`✅ Created ${patients.length} test patients`);
+        console.log('✅ Created 3 patients');
 
-        // Create test doctors
-        console.log('👨‍⚕️ Creating test doctors...');
-        const doctors = await User.create([
-            {
-                name: 'Dr. Sarah Williams',
-                email: 'doctor.sarah@example.com',
-                password: 'password123',
-                role: 'doctor',
-            },
-            {
-                name: 'Dr. Michael Chen',
-                email: 'doctor.michael@example.com',
-                password: 'password123',
-                role: 'doctor',
-            },
-            {
-                name: 'Dr. Emily Rodriguez',
-                email: 'doctor.emily@example.com',
-                password: 'password123',
-                role: 'doctor',
-            },
+        // ── Doctor Users ─────────────────────────────────────────────────────
+        // NOTE: Names do NOT have "Dr." prefix — the frontend adds it
+        const [uSarah, uMichael, uEmily, uJames] = await User.create([
+            { name: 'Sarah Williams', email: 'doctor.sarah@example.com', password: 'password123', role: 'doctor' },
+            { name: 'Michael Chen', email: 'doctor.michael@example.com', password: 'password123', role: 'doctor' },
+            { name: 'Emily Rodriguez', email: 'doctor.emily@example.com', password: 'password123', role: 'doctor' },
+            { name: 'James Wilson', email: 'doctor.james@example.com', password: 'password123', role: 'doctor' },
         ]);
-        console.log(`✅ Created ${doctors.length} test doctors`);
+        console.log('✅ Created 4 doctor users');
 
-        // Create doctor profiles
-        console.log('📋 Creating doctor profiles...');
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const doctorProfiles = await Doctor.create([
+        // ── Doctor Profiles (fully configured) ────────────────────────────────
+        const [dSarah, dMichael, dEmily, dJames] = await Doctor.create([
             {
-                userId: doctors[0]._id,
+                userId: uSarah._id,
                 department: 'General Medicine',
-                specialization: 'Internal Medicine',
-                workingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
-                workingHours: {
-                    start: '09:00',
-                    end: '17:00',
-                },
-                consultationDuration: 15, // minutes
-                breakTimes: [],
+                defaultConsultTime: 15,
                 maxPatientsPerDay: 20,
-                bufferTime: 5, // minutes
-                bio: 'Senior General Medicine Practitioner with 10+ years experience',
+                workingHours: { start: '09:00', end: '17:00' },
+                breakSlots: [{ start: '13:00', end: '14:00' }],
             },
             {
-                userId: doctors[1]._id,
+                userId: uMichael._id,
                 department: 'Cardiology',
-                specialization: 'Cardiology',
-                workingDays: ['Monday', 'Wednesday', 'Friday'],
-                workingHours: {
-                    start: '10:00',
-                    end: '16:00',
-                },
-                consultationDuration: 20,
-                breakTimes: [],
+                defaultConsultTime: 20,
                 maxPatientsPerDay: 15,
-                bufferTime: 5,
-                bio: 'Specialized Cardiologist with expertise in cardiac procedures',
+                workingHours: { start: '10:00', end: '16:00' },
+                breakSlots: [],
             },
             {
-                userId: doctors[2]._id,
+                userId: uEmily._id,
                 department: 'Pediatrics',
-                specialization: 'Pediatrics',
-                workingDays: ['Tuesday', 'Thursday', 'Saturday'],
-                workingHours: {
-                    start: '09:00',
-                    end: '14:00',
-                },
-                consultationDuration: 10,
-                breakTimes: [],
+                defaultConsultTime: 10,
                 maxPatientsPerDay: 25,
-                bufferTime: 2,
-                bio: 'Pediatrician specializing in child healthcare and development',
+                workingHours: { start: '09:00', end: '14:00' },
+                breakSlots: [],
+            },
+            {
+                userId: uJames._id,
+                department: 'Orthopedics',
+                defaultConsultTime: 15,
+                maxPatientsPerDay: 18,
+                workingHours: { start: '08:00', end: '16:00' },
+                breakSlots: [{ start: '12:00', end: '13:00' }],
             },
         ]);
-        console.log(`✅ Created ${doctorProfiles.length} doctor profiles`);
+        console.log('✅ Created 4 doctor profiles with working hours');
 
-        // Create some sample appointments
-        console.log('📅 Creating sample appointments...');
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        // ── Sample Appointments ───────────────────────────────────────────────
+        const today = todayMidnightUTC();
+        const tomorrow = daysFromToday(1);
+        const yesterday = daysFromToday(-1);
+        const nextWeek = daysFromToday(2);
 
-        // Create slot times as Date objects
-        const slot1Start = new Date(tomorrow);
-        slot1Start.setHours(9, 0, 0, 0);
-        const slot1End = new Date(tomorrow);
-        slot1End.setHours(9, 15, 0, 0);
-
-        const slot2Start = new Date(tomorrow);
-        slot2Start.setHours(9, 15, 0, 0);
-        const slot2End = new Date(tomorrow);
-        slot2End.setHours(9, 30, 0, 0);
-
-        const slot3Start = new Date(tomorrow);
-        slot3Start.setHours(10, 0, 0, 0);
-        const slot3End = new Date(tomorrow);
-        slot3End.setHours(10, 20, 0, 0);
-
-        const appointments = await Appointment.create([
+        // Today's appointments for Dr. Sarah (for doctor dashboard demo)
+        const todayAppts = await Appointment.create([
             {
-                patientId: patients[0]._id,
-                doctorId: doctors[0]._id,
+                patientId: john._id,
+                doctorId: dSarah._id,
+                date: today,
+                slotStart: slotDateTime(today, 9, 0),
+                slotEnd: slotDateTime(today, 9, 15),
+                status: 'completed',
+                tokenNumber: 1,
+                priority: 'standard',
+            },
+            {
+                patientId: jane._id,
+                doctorId: dSarah._id,
+                date: today,
+                slotStart: slotDateTime(today, 9, 15),
+                slotEnd: slotDateTime(today, 9, 30),
+                status: 'completed',
+                tokenNumber: 2,
+                priority: 'standard',
+            },
+            {
+                patientId: robert._id,
+                doctorId: dSarah._id,
+                date: today,
+                slotStart: slotDateTime(today, 9, 30),
+                slotEnd: slotDateTime(today, 9, 45),
+                status: 'waiting',
+                tokenNumber: 3,
+                priority: 'senior',
+            },
+            {
+                patientId: john._id,
+                doctorId: dSarah._id,
+                date: today,
+                slotStart: slotDateTime(today, 9, 45),
+                slotEnd: slotDateTime(today, 10, 0),
+                status: 'booked',
+                tokenNumber: 4,
+                priority: 'standard',
+            },
+        ]);
+
+        // Tomorrow's appointments for patients to see
+        await Appointment.create([
+            {
+                patientId: john._id,
+                doctorId: dMichael._id,
                 date: tomorrow,
-                slotStart: slot1Start,
-                slotEnd: slot1End,
+                slotStart: slotDateTime(tomorrow, 10, 0),
+                slotEnd: slotDateTime(tomorrow, 10, 20),
                 status: 'booked',
                 tokenNumber: 1,
+                priority: 'standard',
             },
             {
-                patientId: patients[1]._id,
-                doctorId: doctors[0]._id,
+                patientId: jane._id,
+                doctorId: dEmily._id,
                 date: tomorrow,
-                slotStart: slot2Start,
-                slotEnd: slot2End,
+                slotStart: slotDateTime(tomorrow, 9, 0),
+                slotEnd: slotDateTime(tomorrow, 9, 10),
+                status: 'booked',
+                tokenNumber: 1,
+                priority: 'standard',
+            },
+        ]);
+
+        // Past appointments (for history)
+        const medicalRecordAppt = (await Appointment.create([
+            {
+                patientId: john._id,
+                doctorId: dSarah._id,
+                date: yesterday,
+                slotStart: slotDateTime(yesterday, 9, 0),
+                slotEnd: slotDateTime(yesterday, 9, 15),
+                status: 'completed',
+                tokenNumber: 1,
+                priority: 'standard',
+            },
+            {
+                patientId: jane._id,
+                doctorId: dJames._id,
+                date: yesterday,
+                slotStart: slotDateTime(yesterday, 8, 0),
+                slotEnd: slotDateTime(yesterday, 8, 15),
+                status: 'completed',
+                tokenNumber: 1,
+                priority: 'standard',
+            },
+        ]));
+
+        // Future appointment next week
+        await Appointment.create([
+            {
+                patientId: robert._id,
+                doctorId: dMichael._id,
+                date: nextWeek,
+                slotStart: slotDateTime(nextWeek, 10, 20),
+                slotEnd: slotDateTime(nextWeek, 10, 40),
                 status: 'booked',
                 tokenNumber: 2,
-            },
-            {
-                patientId: patients[2]._id,
-                doctorId: doctors[1]._id,
-                date: tomorrow,
-                slotStart: slot3Start,
-                slotEnd: slot3End,
-                status: 'booked',
-                tokenNumber: 1,
+                priority: 'standard',
             },
         ]);
-        console.log(`✅ Created ${appointments.length} sample appointments`);
 
-        console.log('\n');
-        console.log('='.repeat(60));
-        console.log('TEST ACCOUNTS CREATED');
-        console.log('='.repeat(60));
-        console.log('\n✅ PATIENTS:');
-        patients.forEach((p) => {
-            console.log(`   Email: ${p.email}`);
-            console.log(`   Password: password123`);
-            console.log(`   Name: ${p.name}\n`);
+        console.log('✅ Created sample appointments (today, tomorrow, yesterday, next week)');
+
+        // ── Daily Queue for Today (Dr. Sarah) ──────────────────────────────────
+        await DailyQueue.create({
+            doctorId: dSarah._id,
+            date: today,
+            status: 'active',
+            appointmentCount: todayAppts.length,
+            lastTokenNumber: todayAppts.length,
+            currentToken: 3,
         });
+        console.log("✅ Created today's queue for Dr. Sarah");
 
-        console.log('✅ DOCTORS:');
-        doctors.forEach((d, idx) => {
-            console.log(`   Email: ${d.email}`);
-            console.log(`   Password: password123`);
-            console.log(`   Name: ${d.name}`);
-            console.log(`   Department: ${doctorProfiles[idx].department}\n`);
-        });
+        // ── Medical Records ───────────────────────────────────────────────────
+        // Only create if the model exists
+        try {
+            const MedicalRecord = require('../models/MedicalRecord');
+            await MedicalRecord.create([
+                {
+                    patientId: john._id,
+                    doctorId: dSarah._id,
+                    appointmentId: medicalRecordAppt[0]._id,
+                    chiefComplaint: 'Fever and cough for 3 days',
+                    diagnosis: 'Acute Upper Respiratory Infection',
+                    symptoms: ['fever', 'cough', 'sore throat'],
+                    vitals: {
+                        bloodPressure: '120/80',
+                        heartRate: 88,
+                        temperature: 38.5,
+                        weight: 72,
+                        height: 175,
+                    },
+                    medications: [
+                        { name: 'Paracetamol', dosage: '500mg', frequency: 'Twice daily', duration: '5 days' },
+                        { name: 'Cetirizine', dosage: '10mg', frequency: 'Once at night', duration: '5 days' },
+                    ],
+                    labTests: [],
+                    doctorNotes: 'Patient presented with fever and productive cough. Advised rest and hydration. Follow up in 5 days if no improvement.',
+                    followUpDate: nextWeek,
+                    followUpInstructions: 'Return if fever persists beyond 5 days.',
+                },
+                {
+                    patientId: jane._id,
+                    doctorId: dJames._id,
+                    appointmentId: medicalRecordAppt[1]._id,
+                    chiefComplaint: 'Lower back pain',
+                    diagnosis: 'Lumbar Muscle Strain',
+                    symptoms: ['back pain', 'muscle stiffness'],
+                    vitals: {
+                        bloodPressure: '118/76',
+                        heartRate: 72,
+                        temperature: 37.0,
+                        weight: 58,
+                        height: 162,
+                    },
+                    medications: [
+                        { name: 'Ibuprofen', dosage: '400mg', frequency: 'Three times daily with food', duration: '7 days' },
+                        { name: 'Methocarbamol', dosage: '750mg', frequency: 'Three times daily', duration: '5 days' },
+                    ],
+                    labTests: [],
+                    doctorNotes: 'Muscle strain due to poor posture. Recommend physiotherapy. Ice/heat therapy at home.',
+                    followUpDate: nextWeek,
+                    followUpInstructions: 'Schedule physiotherapy session.',
+                },
+            ]);
+            console.log('✅ Created 2 medical records');
+        } catch (e) {
+            console.log('⚠️  MedicalRecord model not found, skipping medical records');
+        }
 
+        // ── Summary ───────────────────────────────────────────────────────────
+        console.log('\n' + '='.repeat(60));
+        console.log('🎉 DEMO DATA CREATED SUCCESSFULLY');
         console.log('='.repeat(60));
-        console.log('\n✅ Database seeding completed successfully!');
-        console.log('\nYou can now login with any of the above accounts at:');
-        console.log('http://localhost:3000/login');
-        console.log('\n');
+        console.log('\n👤 ADMIN:');
+        console.log('   admin@qline.app / admin123');
+        console.log('\n🏥 PATIENTS:');
+        console.log('   john@example.com / password123 (John Doe)');
+        console.log('   jane@example.com / password123 (Jane Smith)');
+        console.log('   robert@example.com / password123 (Robert Johnson)');
+        console.log('\n👨‍⚕️ DOCTORS:');
+        console.log('   doctor.sarah@example.com / password123 (Sarah Williams — General Medicine)');
+        console.log('   doctor.michael@example.com / password123 (Michael Chen — Cardiology)');
+        console.log('   doctor.emily@example.com / password123 (Emily Rodriguez — Pediatrics)');
+        console.log('   doctor.james@example.com / password123 (James Wilson — Orthopedics)');
+        console.log('\n   All doctors have working hours 9AM-5PM (or similar)');
+        console.log('   Appointments exist: yesterday (completed), today (active queue), tomorrow (booked)');
+        console.log('\n' + '='.repeat(60));
+        console.log('🚀 Start the app: npm run dev (backend) + npm run dev (frontend)');
+        console.log('🌐 Login at: http://localhost:3000/login');
+        console.log('='.repeat(60) + '\n');
+
     } catch (error) {
         console.error('❌ Error seeding database:', error.message);
+        if (error.errors) {
+            Object.entries(error.errors).forEach(([k, v]) => console.error(`   ${k}: ${v.message}`));
+        }
         process.exit(1);
     } finally {
         await mongoose.connection.close();
+        console.log('✅ MongoDB connection closed');
     }
 }
 

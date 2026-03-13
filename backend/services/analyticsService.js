@@ -280,43 +280,38 @@ exports.scheduleDailyAnalytics = async () => {
             try {
                 logger.info('📊 Starting daily analytics calculation...');
 
-                // Get all active doctors
                 const doctors = await Doctor.find({ isActive: true }).select('_id').lean();
-                
+
                 if (doctors.length === 0) {
                     logger.warn('No active doctors found for analytics calculation');
                     return;
                 }
 
-                // Queue analytics calculation for each doctor
                 const yesterday = new Date();
                 yesterday.setDate(yesterday.getDate() - 1);
 
                 let successCount = 0;
                 for (const doctor of doctors) {
                     try {
+                        // Queue via MongoDB-backed analytics queue (no Redis)
                         await analyticsQueue.add('calculate-analytics', {
                             doctorId: doctor._id.toString(),
                             date: yesterday
-                        }, {
-                            attempts: 3,
-                            backoff: { type: 'exponential', delay: 1000 }
-                        });
+                        }, { maxAttempts: 3 });
                         successCount++;
                     } catch (jobError) {
                         logger.error(`Failed to queue analytics for doctor ${doctor._id}:`, jobError.message);
                     }
                 }
 
-                logger.info(`📊 Queued analytics calculation for ${successCount}/${doctors.length} doctors`);
+                logger.info(`📊 Queued analytics for ${successCount}/${doctors.length} doctors`);
             } catch (scheduleError) {
                 logger.error('Error in scheduled analytics task:', scheduleError);
             }
         });
 
-        logger.info('✅ Daily analytics scheduler initialized (runs at 00:00 UTC)');
+        logger.info('✅ Daily analytics scheduler initialized (runs at 00:00 UTC, MongoDB-backed)');
     } catch (error) {
         logger.error('Failed to schedule daily analytics:', error);
-        // Don't throw - this is a non-critical service
     }
 };

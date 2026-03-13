@@ -1,36 +1,22 @@
-const { Queue } = require('bullmq');
+/**
+ * Analytics Queue — MongoDB-based (Redis/BullMQ removed)
+ */
+const { addJob } = require('../models/JobQueue');
 const logger = require('../utils/logger');
 
-/**
- * Analytics Queue
- * Handles heavy analytics calculations asynchronously
- */
-const analyticsQueue = new Queue('analytics', {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'exponential',
-            delay: 120000 // 2 minutes
-        },
-        removeOnComplete: {
-            count: 50,
-            age: 604800 // 7 days
-        },
-        removeOnFail: {
-            count: 50,
-            age: 604800
-        },
-        timeout: 300000 // 5 minute timeout for heavy calculations
-    }
-});
+const analyticsQueue = {
+    name: 'analytics',
 
-analyticsQueue.on('error', (error) => {
-    logger.error('Analytics queue error:', error);
-});
+    async add(type, data, options = {}) {
+        try {
+            const job = await addJob('analytics', type, data, { maxAttempts: options.attempts || 3 });
+            logger.debug(`Analytics job queued: ${type}`);
+            return job;
+        } catch (error) {
+            logger.error('Failed to queue analytics job:', error.message);
+            throw error;
+        }
+    }
+};
 
 module.exports = analyticsQueue;

@@ -8,6 +8,7 @@ import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/AsyncState'
+import { drName } from '@/lib/utils'
 
 export default function MedicalRecordsPage() {
     const [records, setRecords] = useState([])
@@ -112,7 +113,7 @@ export default function MedicalRecordsPage() {
                             <Card hover className="space-y-3 p-5">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <h3 className="text-body-lg font-semibold text-text-primary">
-                                        Dr. {record.doctorName}
+                                        {drName(record.doctorName)}
                                     </h3>
                                     <span className="text-caption text-text-secondary">
                                         {new Date(record.consultationDate).toLocaleDateString()}

@@ -1,43 +1,47 @@
-const { Worker } = require('bullmq');
+/**
+ * Analytics Worker — MongoDB-based (Redis/BullMQ removed)
+ * Polls the MongoDB job queue and processes analytics calculation jobs.
+ */
+const { claimNextJob, completeJob, failJob } = require('../models/JobQueue');
 const analyticsService = require('../services/analyticsService');
 const logger = require('../utils/logger');
 
-/**
- * Analytics Worker
- * Processes jobs from the 'analytics' queue
- */
-const analyticsWorker = new Worker('analytics', async (job) => {
+async function processAnalyticsJob(job) {
     const { doctorId, date } = job.data;
-    const logPrefix = `[AnalyticsJob ${job.id}]`;
-
-    logger.info(`${logPrefix} Calculating analytics for doctor ${doctorId} on ${date}`);
+    logger.info(`[AnalyticsWorker] Calculating analytics for doctor ${doctorId} on ${date}`);
 
     try {
         const result = await analyticsService.calculateDailyAnalytics(doctorId, date);
-
-        logger.info(`${logPrefix} Analytics calculation complete`);
-        return { success: true, result };
-
+        await completeJob(job._id, { result });
+        logger.info(`[AnalyticsWorker] Analytics calculation complete`);
     } catch (error) {
-        logger.error(`${logPrefix} Failed: ${error.message}`);
-        throw error;
+        await failJob(job._id, error);
+        logger.error(`[AnalyticsWorker] Failed: ${error.message}`);
     }
-}, {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    concurrency: parseInt(process.env.ANALYTICS_WORKER_CONCURRENCY) || 2,
-    lockDuration: 60000 // Higher lock duration for heavy tasks
-});
+}
 
-analyticsWorker.on('completed', (job) => {
-    logger.info(`Analytics job ${job.id} completed`);
-});
+let analyticsWorkerRunning = false;
 
-analyticsWorker.on('failed', (job, err) => {
-    logger.error(`Analytics job ${job.id} failed: ${err.message}`);
-});
+function startAnalyticsWorker() {
+    if (analyticsWorkerRunning) return;
+    analyticsWorkerRunning = true;
+    logger.info('📊 Analytics worker started (MongoDB-backed)');
 
-module.exports = analyticsWorker;
+    const poll = async () => {
+        try {
+            const job = await claimNextJob('analytics');
+            if (job) {
+                await processAnalyticsJob(job);
+                setImmediate(poll);
+                return;
+            }
+        } catch (err) {
+            logger.error('[AnalyticsWorker] Poll error:', err.message);
+        }
+        setTimeout(poll, 10000); // Analytics less time-critical
+    };
+
+    poll();
+}
+
+module.exports = { startAnalyticsWorker };

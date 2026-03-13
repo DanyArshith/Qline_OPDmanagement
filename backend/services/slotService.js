@@ -20,9 +20,7 @@ const generateSlots = async (doctorId, date) => {
     // 2. Validate doctor is fully configured
     if (
         !doctor ||
-        !doctor.workingHours ||
-        !doctor.defaultConsultTime ||
-        !doctor.maxPatientsPerDay
+        !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay || !doctor.isConfigured
     ) {
         throw new Error('Doctor has not fully configured their schedule');
     }
@@ -58,9 +56,9 @@ const generateSlots = async (doctorId, date) => {
 
         if (!overlapsBreak) {
             slots.push({
-                start: new Date(currentTime),
-                end: new Date(slotEnd),
-                available: true, // Will be updated based on bookings
+                slotStart: new Date(currentTime).toISOString(),
+                slotEnd: new Date(slotEnd).toISOString(),
+                status: 'available',
             });
         }
 
@@ -75,12 +73,12 @@ const generateSlots = async (doctorId, date) => {
         status: { $in: ['booked', 'waiting', 'in_progress'] },
     }).lean();
 
-    // 8. Mark slots as unavailable if booked
+    // 8. Mark slots as booked if already taken
     slots.forEach((slot) => {
         const isBooked = existingAppointments.some(
-            (apt) => apt.slotStart.getTime() === slot.start.getTime()
+            (apt) => new Date(apt.slotStart).getTime() === new Date(slot.slotStart).getTime()
         );
-        slot.available = !isBooked;
+        if (isBooked) slot.status = 'booked';
     });
 
     return slots;
@@ -101,9 +99,7 @@ const checkSlotAvailability = async (doctorId, date, slotStart, slotEnd) => {
     // 2. Validate complete doctor configuration
     if (
         !doctor ||
-        !doctor.workingHours ||
-        !doctor.defaultConsultTime ||
-        !doctor.maxPatientsPerDay
+        !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay || !doctor.isConfigured
     ) {
         return {
             available: false,

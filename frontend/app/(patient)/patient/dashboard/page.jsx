@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useSocketEvent } from '@/hooks/useSocket'
 import api from '@/lib/api'
 import { normalizeApiError, normalizePaginatedResponse } from '@/lib/apiClient'
-import { formatDate, formatTime } from '@/lib/utils'
+import { formatDate, formatTime, drName } from '@/lib/utils'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
@@ -122,7 +122,7 @@ export default function PatientDashboardPage() {
                             </div>
                             <div>
                                 <p className="text-body font-semibold text-text-primary">
-                                    Dr. {nextAppointment.doctorId?.name || 'Doctor'}
+                                    {drName(nextAppointment.doctorId?.name)}
                                 </p>
                                 <p className="text-caption text-text-secondary">
                                     {nextAppointment.doctorId?.department || 'General'}

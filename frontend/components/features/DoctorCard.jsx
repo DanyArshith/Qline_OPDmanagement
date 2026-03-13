@@ -4,10 +4,16 @@ import Link from 'next/link'
 import { formatTime, getInitials } from '@/lib/utils'
 import Button from '@/components/ui/Button'
 
+function drName(name) {
+    if (!name) return 'Doctor'
+    const n = name.trim()
+    return n.toLowerCase().startsWith('dr.') ? n : `Dr. ${n}`
+}
+
 export default function DoctorCard({ doctor }) {
     const { _id, user, department, defaultConsultTime, nextAvailableSlot, waitingTime } = doctor
 
-    const name = user?.name || 'Dr. Unknown'
+    const name = drName(user?.name)
     const dept = department || 'General Medicine'
     const slotTime = nextAvailableSlot ? formatTime(nextAvailableSlot) : null
 
@@ -28,7 +34,7 @@ export default function DoctorCard({ doctor }) {
                     <span className="text-text-secondary">Consultation Time:</span>
                     <span className="font-medium text-text-primary">{defaultConsultTime || 15} min</span>
                 </div>
-                
+
                 {waitingTime && (
                     <>
                         <div className="h-px bg-border/30" />

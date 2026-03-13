@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import api from '@/lib/api'
-import { formatTime } from '@/lib/utils'
+import { formatTime, drName } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
 import { useSocket, useSocketEvent } from '@/hooks/useSocket'
 import Card from '@/components/ui/Card'
@@ -154,7 +154,7 @@ export default function QueuePage() {
                     <div>
                         <p className="text-body font-medium text-text-primary">Appointment Status</p>
                         <p className="text-caption text-text-secondary mt-0.5">
-                            Dr. {appointment?.doctorId?.name ?? appointment?.doctorId}
+                            {drName(appointment?.doctorId?.name)}
                         </p>
                     </div>
                     <Badge status={appointment?.status ?? 'waiting'} />

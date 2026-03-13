@@ -20,6 +20,13 @@ function generateDays() {
     return Array.from({ length: DATE_COUNT }, (_, i) => addDays(startOfDay(new Date()), i))
 }
 
+// Safely add "Dr." prefix only once
+function drName(name) {
+    if (!name) return 'Doctor'
+    const n = name.trim()
+    return n.toLowerCase().startsWith('dr.') ? n : `Dr. ${n}`
+}
+
 export default function BookPage() {
     const { id: doctorId } = useParams()
     const router = useRouter()
@@ -128,10 +135,10 @@ export default function BookPage() {
                 ) : (
                     <div>
                         <h1 className="text-h2 text-text-primary">
-                            Dr. {doctor?.user?.name || doctor?.userId?.name || 'Doctor'}
+                            {drName(doctor?.user?.name || doctor?.userId?.name)}
                         </h1>
                         <p className="text-body text-text-secondary">
-                            {doctor?.department || 'General'} | {doctor?.defaultConsultTime || 15} min per consultation
+                            {doctor?.department || 'General'} &middot; {doctor?.defaultConsultTime || 15} min consultation
                         </p>
                     </div>
                 )}
@@ -148,11 +155,10 @@ export default function BookPage() {
                             <button
                                 key={day.toISOString()}
                                 onClick={() => setSelectedDate(day)}
-                                className={`shrink-0 rounded-md border px-4 py-2.5 transition-all duration-200 ${
-                                    active
-                                        ? 'border-primary bg-primary-soft text-primary'
-                                        : 'border-border text-text-secondary hover:border-primary'
-                                }`}
+                                className={`shrink-0 rounded-md border px-4 py-2.5 transition-all duration-200 ${active
+                                    ? 'border-primary bg-primary-soft text-primary'
+                                    : 'border-border text-text-secondary hover:border-primary'
+                                    }`}
                             >
                                 <span className="block text-caption uppercase">{format(day, 'EEE')}</span>
                                 <span className="block text-body-lg font-semibold">{format(day, 'd')}</span>
@@ -218,7 +224,7 @@ export default function BookPage() {
                 }
             >
                 <p>
-                    Book with <strong>Dr. {doctor?.user?.name || doctor?.userId?.name || 'Doctor'}</strong> on{' '}
+                    Book with <strong>{drName(doctor?.user?.name || doctor?.userId?.name)}</strong> on{' '}
                     <strong>{formatDate(selectedDate)}</strong> at{' '}
                     <strong>{formatTime(selectedSlot?.slotStart || selectedSlot?.start)}</strong>?
                 </p>

@@ -1,41 +1,22 @@
-const { Queue } = require('bullmq');
-const redisClient = require('../config/redis');
+/**
+ * Email Queue — MongoDB-based (Redis/BullMQ removed)
+ */
+const { addJob } = require('../models/JobQueue');
 const logger = require('../utils/logger');
 
-/**
- * Email Queue
- * Handles all email sending operations asynchronously
- */
-const emailQueue = new Queue('email', {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'exponential',
-            delay: 60000 // Start with 1 minute, doubles each retry
-        },
-        removeOnComplete: {
-            count: 100, // Keep last 100 completed jobs
-            age: 86400 // Remove after 24 hours
-        },
-        removeOnFail: {
-            count: 500, // Keep last 500 failed jobs for debugging
-            age: 604800 // Remove after 7 days
+const emailQueue = {
+    name: 'email',
+
+    async add(type, data, options = {}) {
+        try {
+            const job = await addJob('email', type, data, { maxAttempts: options.attempts || 3 });
+            logger.debug(`Email job queued: ${type} → ${data.to}`);
+            return job;
+        } catch (error) {
+            logger.error('Failed to queue email job:', error.message);
+            throw error;
         }
     }
-});
-
-// Queue event listeners
-emailQueue.on('error', (error) => {
-    logger.error('Email queue error:', error);
-});
-
-emailQueue.on('waiting', (jobId) => {
-    logger.debug(`Email job ${jobId} is waiting`);
-});
+};
 
 module.exports = emailQueue;

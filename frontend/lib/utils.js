@@ -15,6 +15,13 @@ export const timeAgo = (date) =>
 export const getInitials = (name = '') =>
     name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 
+/** Safely prefix "Dr." exactly once */
+export const drName = (name) => {
+    if (!name) return 'Doctor'
+    const n = name.trim()
+    return n.toLowerCase().startsWith('dr.') ? n : `Dr. ${n}`
+}
+
 export const cn = (...classes) => classes.filter(Boolean).join(' ')
 
 export const STATUS_CONFIG = {

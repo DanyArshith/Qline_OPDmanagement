@@ -16,111 +16,128 @@ const bookAppointment = asyncHandler(async (req, res) => {
     const { doctorId, date, slotStart, slotEnd } = req.body;
     const patientId = req.user.userId;
 
-    // Convert to Date objects
     const dateObj = new Date(date);
     const slotStartDate = new Date(slotStart);
     const slotEndDate = new Date(slotEnd);
 
-    // Start MongoDB session for transaction
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    // 1. Fetch doctor
+    const doctor = await Doctor.findById(doctorId);
+    if (!doctor || !doctor.workingHours || !doctor.defaultConsultTime || !doctor.maxPatientsPerDay) {
+        res.status(400);
+        throw new Error('Doctor has not fully configured their schedule');
+    }
 
+    // 2. Normalize date
+    const normalizedDate = normalizeDate(dateObj);
+
+    // 3. Validate slot day matches
+    const slotDay = normalizeDate(slotStartDate);
+    if (slotDay.getTime() !== normalizedDate.getTime()) {
+        res.status(400);
+        throw new Error('Slot must be on the same day as booking date');
+    }
+
+    // 4. Validate time range
+    if (slotEndDate <= slotStartDate) {
+        res.status(400);
+        throw new Error('Invalid slot time range');
+    }
+
+    // 5. Validate slot duration
+    const duration = getSlotDuration(slotStartDate, slotEndDate);
+    const expectedDuration = doctor.defaultConsultTime * 60 * 1000;
+    if (Math.abs(duration - expectedDuration) > 1000) {
+        res.status(400);
+        throw new Error(`Slot duration must be exactly ${doctor.defaultConsultTime} minutes`);
+    }
+
+    // 6. Check not in past
+    if (isInPast(slotStartDate)) {
+        res.status(400);
+        throw new Error('Cannot book appointments in the past');
+    }
+
+    // 7. Check slot not already booked (atomic: slot uniqueness via unique index)
+    const existingSlot = await Appointment.findOne({
+        doctorId,
+        date: normalizedDate,
+        slotStart: slotStartDate,
+        status: { $in: ['booked', 'waiting', 'in_progress'] },
+    });
+    if (existingSlot) {
+        res.status(409);
+        throw new Error('This slot is no longer available');
+    }
+
+    // 8. Atomic increment queue count (upsert creates queue if not exists)
+    const queue = await DailyQueue.findOneAndUpdate(
+        {
+            doctorId,
+            date: normalizedDate,
+            appointmentCount: { $lt: doctor.maxPatientsPerDay },
+        },
+        { $inc: { appointmentCount: 1, lastTokenNumber: 1 } },
+        { new: true, upsert: true }
+    );
+
+    if (!queue) {
+        res.status(400);
+        throw new Error('Doctor has reached maximum appointments for this day');
+    }
+
+    const tokenNumber = queue.lastTokenNumber;
+
+    // 9. Create the appointment
+    let createdAppointment;
     try {
-        // 1. Fetch doctor with session for transaction consistency
-        const doctor = await Doctor.findById(doctorId).session(session);
-
-        if (
-            !doctor ||
-            !doctor.workingHours ||
-            !doctor.defaultConsultTime ||
-            !doctor.maxPatientsPerDay
-        ) {
-            throw new Error('Doctor has not fully configured their schedule');
-        }
-
-        // 2. Normalize date to midnight UTC
-        const normalizedDate = normalizeDate(dateObj);
-
-        // 3. Validate slot is on same day as normalized date
-        const slotDay = normalizeDate(slotStartDate);
-        if (slotDay.getTime() !== normalizedDate.getTime()) {
-            throw new Error('Slot must be on the same day as booking date');
-        }
-
-        // 4. Validate time range explicitly
-        if (slotEndDate <= slotStartDate) {
-            throw new Error('Invalid slot time range');
-        }
-
-        // 5. Validate slot duration (strict)
-        const duration = getSlotDuration(slotStartDate, slotEndDate);
-        const expectedDuration = doctor.defaultConsultTime * 60 * 1000;
-        if (duration !== expectedDuration) {
-            throw new Error(
-                `Slot duration must be exactly ${doctor.defaultConsultTime} minutes`
-            );
-        }
-
-        // 6. Check not in past (UTC)
-        if (isInPast(slotStartDate)) {
-            throw new Error('Cannot book appointments in the past');
-        }
-
-        // 7. Conditional atomic increment - only if below capacity
-        // This prevents exceeding capacity even temporarily
-        const queue = await DailyQueue.findOneAndUpdate(
-            {
-                doctorId,
-                date: normalizedDate,
-                appointmentCount: { $lt: doctor.maxPatientsPerDay }, // Conditional
-            },
-            {
-                $inc: {
-                    appointmentCount: 1,
-                    lastTokenNumber: 1,
-                },
-            },
-            { new: true, upsert: true, session } // SESSION CRITICAL
+        createdAppointment = await Appointment.create({
+            doctorId,
+            patientId,
+            date: normalizedDate,
+            slotStart: slotStartDate,
+            slotEnd: slotEndDate,
+            tokenNumber,
+            status: 'waiting',
+        });
+    } catch (err) {
+        // Roll back the queue increment on failure
+        await DailyQueue.findOneAndUpdate(
+            { doctorId, date: normalizedDate },
+            { $inc: { appointmentCount: -1, lastTokenNumber: -1 } }
         );
-
-        // If null, capacity reached
-        if (!queue) {
-            throw new Error('Doctor has reached maximum appointments for this day');
+        if (err.code === 11000) {
+            res.status(409);
+            throw new Error('This slot is no longer available');
         }
+        throw err;
+    }
 
-        // 8. Get token number from lastTokenNumber (not appointmentCount)
-        const tokenNumber = queue.lastTokenNumber;
-
-        // 9. Create appointment (WITH SESSION - unique index protects duplicates)
-        const appointment = await Appointment.create(
-            [
-                {
-                    doctorId,
-                    patientId,
-                    date: normalizedDate,
-                    slotStart: slotStartDate,
-                    slotEnd: slotEndDate,
+    // 10. Add to queue waiting list
+    await DailyQueue.findOneAndUpdate(
+        { doctorId, date: normalizedDate },
+        {
+            $push: {
+                waitingList: {
+                    appointmentId: createdAppointment._id,
                     tokenNumber,
                     status: 'waiting',
                 },
-            ],
-            { session } // SESSION CRITICAL
-        );
-        const createdAppointment = appointment[0];
+            },
+        }
+    );
 
-        // Persist lifecycle baseline events for analytics.
-        await QueueEvent.create([{
+    // 11. Log queue events (best-effort)
+    QueueEvent.create([
+        {
             appointmentId: createdAppointment._id,
             doctorId,
             patientId,
             queueId: queue._id,
-            event: 'created', // Initial event
+            event: 'created',
             timestamp: new Date(),
-            metadata: {
-                tokenNumber,
-                estimatedWaitTime: 0 // To be enhanced in Phase 5.2
-            }
-        }, {
+            metadata: { tokenNumber, estimatedWaitTime: 0 }
+        },
+        {
             appointmentId: createdAppointment._id,
             doctorId,
             patientId,
@@ -128,53 +145,20 @@ const bookAppointment = asyncHandler(async (req, res) => {
             event: 'waiting',
             previousEvent: 'created',
             timestamp: new Date(),
-            metadata: {
-                tokenNumber,
-                position: queue.appointmentCount
-            }
-        }], { session });
-
-        // 10. Add to waiting list (WITH SESSION)
-        await DailyQueue.findOneAndUpdate(
-            { doctorId, date: normalizedDate },
-            {
-                $push: {
-                    waitingList: {
-                        appointmentId: createdAppointment._id,
-                        tokenNumber,
-                        status: 'waiting',
-                    },
-                },
-            },
-            { session } // SESSION CRITICAL
-        );
-
-        await session.commitTransaction();
-
-        // Notification failures must not fail booking response.
-        notificationService
-            .sendAppointmentBookedNotification(createdAppointment, req.app.get('io'))
-            .catch(() => {});
-
-        res.status(201).json({
-            success: true,
-            appointment: createdAppointment,
-            message: `Appointment booked successfully. Token number: ${tokenNumber}`,
-        });
-    } catch (error) {
-        await session.abortTransaction(); // Reverts ALL changes including $inc
-
-        // Handle duplicate key error specifically
-        if (error.code === 11000) {
-            res.status(400);
-            throw new Error('This slot is no longer available');
+            metadata: { tokenNumber, position: queue.appointmentCount }
         }
+    ]).catch(() => {});
 
-        res.status(400);
-        throw error;
-    } finally {
-        session.endSession();
-    }
+    // Notifications (best-effort)
+    notificationService
+        .sendAppointmentBookedNotification(createdAppointment, req.app.get('io'))
+        .catch(() => {});
+
+    res.status(201).json({
+        success: true,
+        appointment: createdAppointment,
+        message: `Appointment booked successfully. Token number: ${tokenNumber}`,
+    });
 });
 
 /**

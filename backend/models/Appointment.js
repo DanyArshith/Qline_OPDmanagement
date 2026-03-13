@@ -37,6 +37,9 @@ const appointmentSchema = new mongoose.Schema(
             type: Boolean,
             default: false
         },
+        consultationStartTime: Date,
+        consultationEndTime: Date,
+        consultationDuration: Number, // in minutes
         // Phase 5.2: Priority Queue
         priority: {
             type: String,

@@ -1,76 +1,72 @@
-const { Worker } = require('bullmq');
-const notificationService = require('../services/notificationService');
-const logger = require('../utils/logger');
-const Appointment = require('../models/Appointment');
-
 /**
- * Reminder Worker
- * Processes jobs from the 'reminders' queue
+ * Reminder Worker — MongoDB-based (Redis/BullMQ removed)
+ * Polls the MongoDB job queue and processes appointment reminder jobs.
  */
-const reminderWorker = new Worker('reminders', async (job) => {
-    const { appointmentId } = job.data;
-    const logPrefix = `[ReminderJob ${job.id}]`;
+const { claimNextJob, completeJob, failJob } = require('../models/JobQueue');
+const notificationService = require('../services/notificationService');
+const Appointment = require('../models/Appointment');
+const logger = require('../utils/logger');
 
-    logger.debug(`${logPrefix} Processing reminder for appointment ${appointmentId}`);
+async function processReminderJob(job) {
+    const { appointmentId } = job.data;
+    logger.debug(`[ReminderWorker] Processing reminder for appointment ${appointmentId}`);
 
     try {
         const appointment = await Appointment.findById(appointmentId)
             .populate('patientId')
-            .populate({
-                path: 'doctorId',
-                populate: { path: 'userId' }
-            });
+            .populate({ path: 'doctorId', populate: { path: 'userId' } });
 
         if (!appointment) {
-            logger.warn(`${logPrefix} Appointment not found, skipping`);
-            return { skipped: true, reason: 'not_found' };
+            await completeJob(job._id, { skipped: true, reason: 'not_found' });
+            return;
         }
 
-        if (appointment.status === 'cancelled' || appointment.status === 'completed') {
-            logger.info(`${logPrefix} Appointment ${appointment.status}, skipping reminder`);
-            return { skipped: true, reason: `status_${appointment.status}` };
+        if (['cancelled', 'completed'].includes(appointment.status)) {
+            await completeJob(job._id, { skipped: true, reason: `status_${appointment.status}` });
+            return;
         }
 
         if (appointment.reminderSent) {
-            logger.info(`${logPrefix} Reminder already sent, skipping`);
-            return { skipped: true, reason: 'already_sent' };
+            await completeJob(job._id, { skipped: true, reason: 'already_sent' });
+            return;
         }
-
-        // Send reminder via notification service (which will enqueue email)
-        // We pass a flag to avoid circular dependency if notificationService tries to queue existing reminder
-        // But notificationService.sendAppointmentReminderNotification sends email + push
-
-        // We need existing notificationService logic, but refactored to NOT use direct sendEmail if we want to be pure
-        // However, notificationService.sendEmail will now enqueue email jobs, so it's safe!
 
         await notificationService.sendAppointmentReminderNotification(appointment);
 
-        // Mark as sent
         appointment.reminderSent = true;
         await appointment.save();
 
-        logger.info(`${logPrefix} Reminder sent successfully`);
-        return { success: true };
+        await completeJob(job._id, { success: true });
+        logger.info(`[ReminderWorker] Reminder sent for appointment ${appointmentId}`);
 
     } catch (error) {
-        logger.error(`${logPrefix} Failed: ${error.message}`);
-        throw error;
+        await failJob(job._id, error);
+        logger.error(`[ReminderWorker] Failed: ${error.message}`);
     }
-}, {
-    connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined
-    },
-    concurrency: parseInt(process.env.REMINDER_WORKER_CONCURRENCY) || 3
-});
+}
 
-reminderWorker.on('completed', (job) => {
-    logger.debug(`Reminder job ${job.id} completed`);
-});
+let reminderWorkerRunning = false;
 
-reminderWorker.on('failed', (job, err) => {
-    logger.error(`Reminder job ${job.id} failed: ${err.message}`);
-});
+function startReminderWorker() {
+    if (reminderWorkerRunning) return;
+    reminderWorkerRunning = true;
+    logger.info('⏰ Reminder worker started (MongoDB-backed)');
 
-module.exports = reminderWorker;
+    const poll = async () => {
+        try {
+            const job = await claimNextJob('reminders');
+            if (job) {
+                await processReminderJob(job);
+                setImmediate(poll);
+                return;
+            }
+        } catch (err) {
+            logger.error('[ReminderWorker] Poll error:', err.message);
+        }
+        setTimeout(poll, 5000);
+    };
+
+    poll();
+}
+
+module.exports = { startReminderWorker };
