@@ -1,4 +1,4 @@
-name: Qline Frontend CI/CD
+name: Qline Frontend CI
 
 on:
   push:
@@ -12,9 +12,7 @@ on:
       - 'frontend/**'
 
 env:
-  NODE_VERSION: '20'
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/qline-frontend
+  NODE_VERSION: '22'
 
 jobs:
   lint-and-build:
@@ -29,12 +27,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci --frozen-lockfile
+        run: npm ci
 
       - name: Lint
         working-directory: frontend
@@ -43,74 +41,3 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
-
-  build:
-    name: Build & Push Docker Image
-    runs-on: ubuntu-latest
-    needs: lint-and-build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
-
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: staging
-
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.STAGING_HOST }}
-          username: ${{ secrets.STAGING_USER }}
-          key: ${{ secrets.STAGING_SSH_KEY }}
-          script: |
-            cd /opt/qline
-            docker compose pull frontend
-            docker compose up -d --no-deps frontend
-            docker system prune -f
-            echo "Frontend staging deploy complete"
-
-      - name: Verify deployment
-        run: |
-          sleep 10
-          curl -f "https://${{ secrets.STAGING_HOST }}" || \
-            (echo "Frontend health check failed after deploy" && exit 1)
