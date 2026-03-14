@@ -94,19 +94,4 @@ if (!encryptionKey) {
     console.log('✅ Medical record encryption enabled');
 }
 
-// Prevent accidental logging of sensitive data
-medicalRecordSchema.methods.toJSON = function () {
-    const obj = this.toObject();
-    // Don't include encrypted fields in logs by default
-    if (process.env.LOG_MEDICAL_DATA !== 'true') {
-        delete obj.diagnosis;
-        delete obj.notes;
-        delete obj.medications;
-        delete obj.labTests;
-        delete obj.vitals;
-        delete obj.followUp;
-    }
-    return obj;
-};
-
 module.exports = mongoose.model('MedicalRecord', medicalRecordSchema);

@@ -8,6 +8,27 @@ const roleCheck = require('../middleware/roleCheck');
 // All medical record routes require authentication
 router.use(authMiddleware.verifyToken);
 
+router.get(
+    '/doctor/patients',
+    roleCheck.requireRole(['doctor']),
+    medicalRecordController.getDoctorPatients
+);
+
+router.get(
+    '/doctor/patients/:patientId/history',
+    roleCheck.requireRole(['doctor']),
+    [
+        param('patientId').isMongoId().withMessage('Valid patient ID required')
+    ],
+    medicalRecordController.getDoctorPatientTimeline
+);
+
+router.get(
+    '/doctor',
+    roleCheck.requireRole(['doctor']),
+    medicalRecordController.getDoctorRecords
+);
+
 /**
  * @route   POST /api/medical-records
  * @desc    Create medical record (doctor only)
