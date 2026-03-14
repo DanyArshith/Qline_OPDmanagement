@@ -4,6 +4,9 @@ const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
+const { withOptionalTransaction } = require('../utils/transactionManager');
+
+const withSession = (session) => (session ? { session } : {});
 
 /**
  * Create medical record (doctor only)
@@ -23,53 +26,52 @@ exports.createRecord = asyncHandler(async (req, res) => {
         followUp
     } = req.body;
 
-    // Fetch appointment with doctor populated
-    const appointment = await Appointment.findById(appointmentId)
-        .populate({ path: 'doctorId', populate: { path: 'userId' } });
+    const record = await withOptionalTransaction(async ({ session }) => {
+        // Fetch appointment with doctor populated
+        const appointment = await Appointment.findById(appointmentId)
+            .populate({ path: 'doctorId', populate: { path: 'userId' } })
+            .session(session || null);
 
-    if (!appointment) {
-        return res.status(404).json({
-            success: false,
-            error: 'Appointment not found'
+        if (!appointment) {
+            res.status(404);
+            throw new Error('Appointment not found');
+        }
+
+        // Verify doctor owns this appointment
+        if (appointment.doctorId.userId._id.toString() !== doctorUserId) {
+            res.status(403);
+            throw new Error('You are not authorized to create a record for this appointment');
+        }
+
+        // Check if record already exists
+        const existingRecord = await MedicalRecord.findOne({ appointmentId }, null, withSession(session));
+        if (existingRecord) {
+            res.status(400);
+            throw new Error('Medical record already exists for this appointment');
+        }
+
+        const createdRecord = new MedicalRecord({
+            patientId: appointment.patientId,
+            doctorId: appointment.doctorId._id,
+            appointmentId,
+            date: appointment.date,
+            chiefComplaint,
+            symptoms,
+            diagnosis,
+            notes,
+            medications,
+            labTests,
+            vitals,
+            followUp
         });
-    }
+        await createdRecord.save(withSession(session));
 
-    // Verify doctor owns this appointment
-    if (appointment.doctorId.userId._id.toString() !== doctorUserId) {
-        return res.status(403).json({
-            success: false,
-            error: 'You are not authorized to create a record for this appointment'
-        });
-    }
+        // Update appointment status to completed
+        appointment.status = 'completed';
+        await appointment.save(withSession(session));
 
-    // Check if record already exists
-    const existingRecord = await MedicalRecord.findOne({ appointmentId });
-    if (existingRecord) {
-        return res.status(400).json({
-            success: false,
-            error: 'Medical record already exists for this appointment'
-        });
-    }
-
-    // Create medical record
-    const record = await MedicalRecord.create({
-        patientId: appointment.patientId,
-        doctorId: appointment.doctorId._id,
-        appointmentId,
-        date: appointment.date,
-        chiefComplaint,
-        symptoms,
-        diagnosis,
-        notes,
-        medications,
-        labTests,
-        vitals,
-        followUp
+        return createdRecord;
     });
-
-    // Update appointment status to completed
-    appointment.status = 'completed';
-    await appointment.save();
 
     logger.info(`Medical record created for appointment ${appointmentId}`);
 

@@ -21,6 +21,9 @@ const { syncDoctorSchedule } = require('../services/doctorScheduleService');
 const { autoCarryForwardPastAppointmentsForDoctor } = require('../services/appointmentCarryForwardService');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
+const { withOptionalTransaction } = require('../utils/transactionManager');
+
+const withSession = (session) => (session ? { session } : {});
 
 const serializeDoctorSchedule = (doctor) => {
     const todayAvailability = getDoctorAvailabilityForDate(doctor, new Date());
@@ -122,35 +125,39 @@ const configureSchedule = asyncHandler(async (req, res) => {
         throw new Error('At least one valid working day is required');
     }
 
-    let doctor = await Doctor.findOne({ userId: req.user.userId });
+    const doctor = await withOptionalTransaction(async ({ session }) => {
+        let doctorDoc = await Doctor.findOne({ userId: req.user.userId }, null, withSession(session));
 
-    if (doctor) {
-        doctor.department = department || doctor.department;
-        doctor.workingHours = workingHours;
-        doctor.breakSlots = breakSlots;
-        doctor.workingDays = normalizedWorkingDayList.length > 0
-            ? normalizedWorkingDayList
-            : getNormalizedWorkingDays(doctor);
-        doctor.defaultConsultTime = defaultConsultTime;
-        doctor.maxPatientsPerDay = maxPatientsPerDay;
-        doctor.isConfigured = true;
-        await doctor.save();
-    } else {
-        doctor = await Doctor.create({
-            userId: req.user.userId,
-            department,
-            workingHours,
-            breakSlots,
-            workingDays: normalizedWorkingDayList.length > 0
+        if (doctorDoc) {
+            doctorDoc.department = department || doctorDoc.department;
+            doctorDoc.workingHours = workingHours;
+            doctorDoc.breakSlots = breakSlots;
+            doctorDoc.workingDays = normalizedWorkingDayList.length > 0
                 ? normalizedWorkingDayList
-                : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
-            defaultConsultTime,
-            maxPatientsPerDay,
-            isConfigured: true,
-        });
-    }
+                : getNormalizedWorkingDays(doctorDoc);
+            doctorDoc.defaultConsultTime = defaultConsultTime;
+            doctorDoc.maxPatientsPerDay = maxPatientsPerDay;
+            doctorDoc.isConfigured = true;
+            await doctorDoc.save(withSession(session));
+        } else {
+            doctorDoc = new Doctor({
+                userId: req.user.userId,
+                department,
+                workingHours,
+                breakSlots,
+                workingDays: normalizedWorkingDayList.length > 0
+                    ? normalizedWorkingDayList
+                    : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+                defaultConsultTime,
+                maxPatientsPerDay,
+                isConfigured: true,
+            });
+            await doctorDoc.save(withSession(session));
+        }
 
-    await syncDoctorSchedule(doctor);
+        await syncDoctorSchedule(doctorDoc, session);
+        return doctorDoc;
+    });
 
     await cacheManager.invalidateByTag(`doctor:${doctor._id}:slots`);
     logger.info(`Cache invalidated for doctor ${doctor._id} after schedule update`);
@@ -216,8 +223,6 @@ const updateAvailabilityStatus = asyncHandler(async (req, res) => {
     });
 
     await cacheManager.invalidateByTag(`doctor:${doctor._id}:slots`);
-    await syncDoctorSchedule(result.doctor);
-
     res.status(200).json({
         success: true,
         doctor: serializeDoctorSchedule(result.doctor),

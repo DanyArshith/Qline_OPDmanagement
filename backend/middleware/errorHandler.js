@@ -21,6 +21,11 @@ const errorHandler = (err, req, res, next) => {
             .join(', ');
     }
 
+    if (err.name === 'CastError') {
+        statusCode = 400;
+        message = `Invalid ${err.path || 'request parameter'}`;
+    }
+
     // JWT errors
     if (err.name === 'JsonWebTokenError') {
         statusCode = 401;
@@ -30,6 +35,17 @@ const errorHandler = (err, req, res, next) => {
     if (err.name === 'TokenExpiredError') {
         statusCode = 401;
         message = 'Token expired';
+    }
+
+    const mongoMessage = err?.message || '';
+    if (
+        mongoMessage.includes('WriteConflict') ||
+        mongoMessage.includes('NoSuchTransaction') ||
+        mongoMessage.includes('TransientTransactionError') ||
+        mongoMessage.includes('Cannot use a session that has ended')
+    ) {
+        statusCode = 503;
+        message = 'Database operation could not be completed. Please retry.';
     }
 
     // Log error in development

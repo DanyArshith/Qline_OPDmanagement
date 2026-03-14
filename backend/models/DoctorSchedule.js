@@ -7,7 +7,6 @@ const doctorScheduleSchema = new mongoose.Schema(
             ref: 'Doctor',
             required: true,
             unique: true,
-            index: true,
         },
         workingDays: {
             type: [String],

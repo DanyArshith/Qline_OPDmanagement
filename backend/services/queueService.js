@@ -18,38 +18,77 @@ const toRoomDate = (date) => normalizeDate(date).toISOString().split('T')[0];
 
 const safePopulatePatient = (query) => query.populate('patientId', 'name email');
 
+const buildQueueSeed = async (doctorId, date, session = null) => {
+    const existingAppointments = await Appointment.find({
+        doctorId,
+        date,
+        status: { $ne: 'cancelled' },
+    }, null, withSession(session)).sort({ tokenNumber: 1 });
+
+    return {
+        doctorId,
+        date,
+        currentToken: null,
+        appointmentCount: existingAppointments.length,
+        lastTokenNumber: existingAppointments.at(-1)?.tokenNumber || 0,
+        waitingList: existingAppointments.map((appointment) => ({
+            appointmentId: appointment._id,
+            tokenNumber: appointment.tokenNumber,
+            status: ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)
+                ? 'in_consultation'
+                : appointment.status === 'booked'
+                    ? 'waiting'
+                    : appointment.status,
+        })),
+        status: existingAppointments.length ? 'active' : 'closed',
+    };
+};
+
 const createQueueIfMissing = async (doctorId, date, session = null) => {
-    let queue = await DailyQueue.findOne({ doctorId, date }, null, withSession(session));
+    const normalizedDate = normalizeDate(date);
+    let queue = await DailyQueue.findOne({ doctorId, date: normalizedDate }, null, withSession(session));
 
     if (!queue) {
-        const existingAppointments = await Appointment.find({
-            doctorId,
-            date,
-            status: { $ne: 'cancelled' },
-        }, null, withSession(session)).sort({ tokenNumber: 1 });
+        const seed = await buildQueueSeed(doctorId, normalizedDate, session);
 
-        queue = new DailyQueue({
-            doctorId,
-            date,
-            currentToken: null,
-            appointmentCount: existingAppointments.length,
-            lastTokenNumber: existingAppointments.at(-1)?.tokenNumber || 0,
-            waitingList: existingAppointments.map((appointment) => ({
-                appointmentId: appointment._id,
-                tokenNumber: appointment.tokenNumber,
-                status: ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)
-                    ? 'in_consultation'
-                    : appointment.status === 'booked'
-                        ? 'waiting'
-                        : appointment.status,
-            })),
-            status: existingAppointments.length ? 'active' : 'closed',
-        });
+        try {
+            queue = await DailyQueue.findOneAndUpdate(
+                { doctorId, date: normalizedDate },
+                { $setOnInsert: seed },
+                {
+                    new: true,
+                    upsert: true,
+                    setDefaultsOnInsert: true,
+                    ...withSession(session),
+                }
+            );
+        } catch (error) {
+            if (error?.code !== 11000) {
+                throw error;
+            }
 
-        await queue.save(withSession(session));
+            queue = await DailyQueue.findOne({ doctorId, date: normalizedDate }, null, withSession(session));
+        }
+    }
+
+    if (!queue) {
+        throw new Error('Failed to initialize daily queue');
     }
 
     return queue;
+};
+
+const recordQueueEvents = async (events, session = null) => {
+    const payloads = Array.isArray(events) ? events : [events];
+
+    if (payloads.length === 0) {
+        return [];
+    }
+
+    return QueueEvent.insertMany(payloads, {
+        ordered: true,
+        ...withSession(session),
+    });
 };
 
 const recordQueueEvent = async ({
@@ -73,12 +112,8 @@ const recordQueueEvent = async ({
         metadata,
     };
 
-    if (session) {
-        await QueueEvent.create([payload], { session });
-        return;
-    }
-
-    await QueueEvent.create(payload);
+    const [eventDoc] = await recordQueueEvents([payload], session);
+    return eventDoc;
 };
 
 const buildQueueStateInternal = async (doctorId, date, session = null) => {
@@ -562,6 +597,7 @@ module.exports = {
     ACTIVE_CONSULTATION_STATUSES,
     CLOSED_APPOINTMENT_STATUSES,
     createQueueIfMissing,
+    recordQueueEvents,
     recordQueueEvent,
     emitQueueUpdated,
     getQueueState,

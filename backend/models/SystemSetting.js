@@ -16,6 +16,4 @@ const systemSettingSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
-systemSettingSchema.index({ key: 1 }, { unique: true });
-
 module.exports = mongoose.model('SystemSetting', systemSettingSchema);

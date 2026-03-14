@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const DailyQueue = require('../models/DailyQueue');
-const QueueEvent = require('../models/QueueEvent');
 const ConsultationHistory = require('../models/ConsultationHistory');
 const asyncHandler = require('../utils/asyncHandler');
 const { normalizeDate, isInPast, getSlotDuration } = require('../utils/dateUtils');
@@ -121,7 +120,7 @@ const moveAppointmentToSlot = async ({
         );
     }
 
-    await QueueEvent.create([{
+    await queueService.recordQueueEvents([{
         appointmentId: appointment._id,
         doctorId: appointment.doctorId,
         patientId: appointment.patientId,
@@ -132,7 +131,7 @@ const moveAppointmentToSlot = async ({
         metadata: {
             tokenNumber: appointment.tokenNumber,
         },
-    }], withSession(session));
+    }], session);
 
     return {
         appointment,
@@ -221,7 +220,7 @@ const bookAppointment = asyncHandler(async (req, res) => {
 
         let createdAppointment;
         try {
-            createdAppointment = await Appointment.create([{
+            createdAppointment = await Appointment.insertMany([{
                 doctorId,
                 patientId,
                 date: normalizedDate,
@@ -229,7 +228,10 @@ const bookAppointment = asyncHandler(async (req, res) => {
                 slotEnd: slotEndDate,
                 tokenNumber,
                 status: 'waiting',
-            }], withSession(session));
+            }], {
+                ordered: true,
+                ...withSession(session),
+            });
         } catch (err) {
             if (err.code === 11000) {
                 res.status(409);
@@ -247,7 +249,7 @@ const bookAppointment = asyncHandler(async (req, res) => {
         queue.status = 'active';
         await queue.save(withSession(session));
 
-        await QueueEvent.create([
+        await queueService.recordQueueEvents([
             {
                 appointmentId: appointment._id,
                 doctorId,
@@ -267,7 +269,7 @@ const bookAppointment = asyncHandler(async (req, res) => {
                 timestamp: new Date(),
                 metadata: { tokenNumber, position: queue.appointmentCount },
             },
-        ], withSession(session));
+        ], session);
 
         return {
             appointment,
@@ -418,7 +420,7 @@ const cancelAppointment = asyncHandler(async (req, res) => {
         ));
         await queue.save(withSession(session));
 
-        await QueueEvent.create([{
+        await queueService.recordQueueEvents([{
             appointmentId: appointment._id,
             doctorId: appointment.doctorId,
             patientId: appointment.patientId,
@@ -429,7 +431,7 @@ const cancelAppointment = asyncHandler(async (req, res) => {
             metadata: {
                 tokenNumber: appointment.tokenNumber,
             },
-        }], withSession(session));
+        }], session);
 
         return appointment;
     });

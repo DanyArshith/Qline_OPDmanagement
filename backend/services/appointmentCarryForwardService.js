@@ -1,6 +1,5 @@
 const Appointment = require('../models/Appointment');
 const DailyQueue = require('../models/DailyQueue');
-const QueueEvent = require('../models/QueueEvent');
 const notificationService = require('./notificationService');
 const queueService = require('./queueService');
 const { findNextAvailableSlot } = require('./slotService');
@@ -124,7 +123,7 @@ const reassignSingleAppointment = async ({ appointmentId, doctor, io }) => {
             );
         }
 
-        await QueueEvent.create([{
+        await queueService.recordQueueEvents([{
             appointmentId: appointment._id,
             doctorId: appointment.doctorId,
             patientId: appointment.patientId,
@@ -135,7 +134,7 @@ const reassignSingleAppointment = async ({ appointmentId, doctor, io }) => {
             metadata: {
                 tokenNumber: appointment.tokenNumber,
             },
-        }], withSession(session));
+        }], session);
 
         return {
             appointment: appointment.toObject(),

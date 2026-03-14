@@ -60,7 +60,7 @@ const withOptionalTransaction = async (work) => {
 
         throw error;
     } finally {
-        session.endSession();
+        await session.endSession();
     }
 };
 

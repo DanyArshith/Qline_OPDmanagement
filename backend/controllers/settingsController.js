@@ -1,8 +1,10 @@
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
+const { withOptionalTransaction } = require('../utils/transactionManager');
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
+const withSession = (session) => (session ? { session } : {});
 
 const getRefreshCookieOptions = () => {
     const isProd = (process.env.NODE_ENV || 'development') === 'production';
@@ -124,27 +126,29 @@ exports.changePassword = asyncHandler(async (req, res) => {
         throw new Error('Current password and new password are required');
     }
 
-    const user = await User.findById(req.user.userId).select('+password');
-    if (!user) {
-        res.status(404);
-        throw new Error('User not found');
-    }
+    await withOptionalTransaction(async ({ session }) => {
+        const user = await User.findById(req.user.userId, null, withSession(session)).select('+password');
+        if (!user) {
+            res.status(404);
+            throw new Error('User not found');
+        }
 
-    const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-        res.status(401);
-        throw new Error('Current password is incorrect');
-    }
+        const isMatch = await user.comparePassword(currentPassword);
+        if (!isMatch) {
+            res.status(401);
+            throw new Error('Current password is incorrect');
+        }
 
-    if (currentPassword === newPassword) {
-        res.status(400);
-        throw new Error('New password must be different from current password');
-    }
+        if (currentPassword === newPassword) {
+            res.status(400);
+            throw new Error('New password must be different from current password');
+        }
 
-    user.password = newPassword;
-    await user.save();
+        user.password = newPassword;
+        await user.save(withSession(session));
 
-    await RefreshToken.deleteMany({ userId: user._id });
+        await RefreshToken.deleteMany({ userId: user._id }, withSession(session));
+    });
 
     res.json({
         success: true,

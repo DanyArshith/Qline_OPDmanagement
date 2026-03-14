@@ -5,8 +5,13 @@ const DailyQueue = require('../models/DailyQueue');
 const AuditLog = require('../models/AuditLog');
 const SystemSetting = require('../models/SystemSetting');
 const RefreshToken = require('../models/RefreshToken');
+const DoctorSchedule = require('../models/DoctorSchedule');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
+const { syncDoctorSchedule } = require('../services/doctorScheduleService');
+const { withOptionalTransaction } = require('../utils/transactionManager');
+
+const withSession = (session) => (session ? { session } : {});
 
 const DEFAULT_SYSTEM_SETTINGS = {
     hospitalName: 'Qline Medical Center',
@@ -140,23 +145,6 @@ exports.updateUserStatus = asyncHandler(async (req, res) => {
     const { status } = req.body; // 'active', 'suspended', etc.
     const allowedStatuses = ['active', 'suspended'];
 
-    const user = await User.findById(id).select('-password');
-
-    if (!user) {
-        return res.status(404).json({
-            success: false,
-            error: 'User not found'
-        });
-    }
-
-    // Prevent admin from suspending themselves
-    if (user._id.toString() === req.user.userId) {
-        return res.status(400).json({
-            success: false,
-            error: 'You cannot change your own status'
-        });
-    }
-
     if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
             success: false,
@@ -164,11 +152,28 @@ exports.updateUserStatus = asyncHandler(async (req, res) => {
         });
     }
 
-    user.status = status;
-    await user.save();
+    const user = await withOptionalTransaction(async ({ session }) => {
+        const existingUser = await User.findById(id, null, withSession(session)).select('-password');
 
-    // Force re-login from all devices when status changes.
-    await RefreshToken.deleteMany({ userId: user._id });
+        if (!existingUser) {
+            res.status(404);
+            throw new Error('User not found');
+        }
+
+        // Prevent admin from suspending themselves
+        if (existingUser._id.toString() === req.user.userId) {
+            res.status(400);
+            throw new Error('You cannot change your own status');
+        }
+
+        existingUser.status = status;
+        await existingUser.save(withSession(session));
+
+        // Force re-login from all devices when status changes.
+        await RefreshToken.deleteMany({ userId: existingUser._id }, withSession(session));
+
+        return existingUser;
+    });
 
     logger.info(`Admin ${req.user.userId} updated status of user ${id} to ${status}`);
 
@@ -461,25 +466,34 @@ exports.updateSettings = asyncHandler(async (req, res) => {
  */
 exports.createDoctor = asyncHandler(async (req, res) => {
     const { name, email, password, department, phone, defaultConsultTime } = req.body;
-    
-    // Create user
-    const user = await User.create({
-        name,
-        email,
-        password,
-        role: 'doctor',
+
+    const { user, doctor } = await withOptionalTransaction(async ({ session }) => {
+        const createdUser = new User({
+            name,
+            email,
+            password,
+            role: 'doctor',
+            phone,
+        });
+        await createdUser.save(withSession(session));
+
+        const createdDoctor = new Doctor({
+            userId: createdUser._id,
+            department: department || 'General',
+            workingHours: { start: '09:00', end: '17:00' },
+            defaultConsultTime: defaultConsultTime || 15,
+            maxPatientsPerDay: 50,
+            isConfigured: false,
+        });
+        await createdDoctor.save(withSession(session));
+        await syncDoctorSchedule(createdDoctor, session);
+
+        return {
+            user: createdUser,
+            doctor: createdDoctor,
+        };
     });
-    
-    // Create doctor profile
-    const doctor = await Doctor.create({
-        userId: user._id,
-        department: department || 'General',
-        workingHours: { start: '09:00', end: '17:00' },
-        defaultConsultTime: defaultConsultTime || 15,
-        maxPatientsPerDay: 50,
-        isConfigured: false,
-    });
-    
+
     res.status(201).json({ success: true, user, doctor });
 });
 
@@ -511,17 +525,21 @@ exports.updateDoctor = asyncHandler(async (req, res) => {
  */
 exports.deleteDoctor = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    
-    const doctor = await Doctor.findById(id);
-    if (!doctor) {
-        res.status(404);
-        throw new Error('Doctor not found');
-    }
-    
-    await User.findByIdAndDelete(doctor.userId);
-    await Appointment.deleteMany({ doctorId: doctor._id });
-    await DailyQueue.deleteMany({ doctorId: doctor._id });
-    await Doctor.findByIdAndDelete(id);
-    
+
+    await withOptionalTransaction(async ({ session }) => {
+        const doctor = await Doctor.findById(id, null, withSession(session));
+        if (!doctor) {
+            res.status(404);
+            throw new Error('Doctor not found');
+        }
+
+        await RefreshToken.deleteMany({ userId: doctor.userId }, withSession(session));
+        await User.deleteOne({ _id: doctor.userId }, withSession(session));
+        await Appointment.deleteMany({ doctorId: doctor._id }, withSession(session));
+        await DailyQueue.deleteMany({ doctorId: doctor._id }, withSession(session));
+        await DoctorSchedule.deleteOne({ doctorId: doctor._id }, withSession(session));
+        await Doctor.deleteOne({ _id: id }, withSession(session));
+    });
+
     res.json({ success: true, message: 'Doctor deleted' });
 });

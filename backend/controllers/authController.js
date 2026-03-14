@@ -6,8 +6,10 @@ const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
 const notificationService = require('../services/notificationService');
 const { syncDoctorSchedule } = require('../services/doctorScheduleService');
+const { withOptionalTransaction } = require('../utils/transactionManager');
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
+const withSession = (session) => (session ? { session } : {});
 
 const normalizeEmail = (email) => {
     return typeof email === 'string' ? email.trim().toLowerCase() : email;
@@ -518,28 +520,30 @@ const changePassword = asyncHandler(async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const userId = req.user?.userId;
 
-    const user = await User.findById(userId).select('+password');
-    if (!user) {
-        res.status(404);
-        throw new Error('User not found');
-    }
+    await withOptionalTransaction(async ({ session }) => {
+        const user = await User.findById(userId, null, withSession(session)).select('+password');
+        if (!user) {
+            res.status(404);
+            throw new Error('User not found');
+        }
 
-    const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-        res.status(401);
-        throw new Error('Current password is incorrect');
-    }
+        const isMatch = await user.comparePassword(currentPassword);
+        if (!isMatch) {
+            res.status(401);
+            throw new Error('Current password is incorrect');
+        }
 
-    if (currentPassword === newPassword) {
-        res.status(400);
-        throw new Error('New password must be different from current password');
-    }
+        if (currentPassword === newPassword) {
+            res.status(400);
+            throw new Error('New password must be different from current password');
+        }
 
-    user.password = newPassword;
-    await user.save();
+        user.password = newPassword;
+        await user.save(withSession(session));
 
-    // Invalidate existing refresh tokens to force re-login on other sessions.
-    await RefreshToken.deleteMany({ userId: user._id });
+        // Invalidate existing refresh tokens to force re-login on other sessions.
+        await RefreshToken.deleteMany({ userId: user._id }, withSession(session));
+    });
 
     res.status(200).json({
         success: true,
