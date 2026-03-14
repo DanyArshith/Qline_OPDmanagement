@@ -23,7 +23,7 @@ if (process.env.SENDGRID_API_KEY) {
 if (process.env.SMTP_HOST) {
     try {
         const nodemailer = require('nodemailer');
-        smtpTransporter = nodemailer.createTransporter({
+        smtpTransporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
             port: parseInt(process.env.SMTP_PORT) || 587,
             secure: process.env.SMTP_SECURE === 'true',

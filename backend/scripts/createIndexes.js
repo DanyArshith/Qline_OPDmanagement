@@ -4,7 +4,7 @@
  */
 
 const mongoose = require('mongoose');
-require('dotenv').config();
+require('../config/loadEnv');
 
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');

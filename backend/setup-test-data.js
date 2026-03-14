@@ -193,7 +193,7 @@ async function setupTestData() {
 }
 
 // Load environment variables
-require('dotenv').config();
+require('./config/loadEnv');
 
 // Run setup
 setupTestData();

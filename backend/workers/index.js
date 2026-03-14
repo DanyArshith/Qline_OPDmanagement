@@ -3,7 +3,7 @@
  * All workers now use MongoDB job queue (Redis/BullMQ removed).
  */
 
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+require('../config/loadEnv');
 
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');

@@ -73,6 +73,11 @@ dump.rdb.*
 # Environment (only .env variations, keep .env for repo)
 .env.local
 .env.*.local
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.production
+frontend/.env.production.local
 
 # Build outputs
 dist/

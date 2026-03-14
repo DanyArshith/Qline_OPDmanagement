@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('./config/loadEnv');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -35,6 +35,9 @@ const errorRoutes = require('./routes/error');
 // Initialize Express
 const app = express();
 const server = http.createServer(app);
+
+// Respect reverse proxies (Render, Nginx, etc.) for client IPs and secure cookies.
+app.set('trust proxy', 1);
 
 // Sentry request handler (production only)
 if (process.env.NODE_ENV === 'production' && process.env.SENTRY_DSN) {

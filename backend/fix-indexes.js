@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-require('dotenv').config();
+require('./config/loadEnv');
 
 async function fixIndexes() {
     try {

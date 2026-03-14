@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "description": "Qline OPD Queue and Appointment Management System — MongoDB-only (no Redis, no Docker)",
   "main": "server.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
