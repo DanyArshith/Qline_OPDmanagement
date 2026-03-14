@@ -50,7 +50,7 @@ services:
       - key: LOG_LEVEL
         value: info
       - key: CACHE_WARM_ON_STARTUP
-        value: "true"
+        value: "false"
       - key: RUN_WORKERS_IN_API
         value: "false"
       - key: RATE_LIMIT_WINDOW_MS
