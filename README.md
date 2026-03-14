@@ -88,6 +88,7 @@ Recommended production layout:
 Quick hosted option:
 
 - Render Blueprint via [`render.yaml`](/d:/Projects/Qline/render.yaml)
+- Free Render demo Blueprint via [`render-free.yaml`](/d:/Projects/Qline/render-free.yaml)
 - Render guide: [`docs/RENDER_DEPLOYMENT.md`](/d:/Projects/Qline/docs/RENDER_DEPLOYMENT.md)
 
 Use these files:

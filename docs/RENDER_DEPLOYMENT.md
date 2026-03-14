@@ -6,7 +6,10 @@ Qline can be deployed to Render with three services:
 - `qline-api`: Express API web service
 - `qline-worker`: background worker for async jobs
 
-Use the root [`render.yaml`](/d:/Projects/Qline/render.yaml) as a Render Blueprint.
+Use one of these Blueprint files:
+
+- Full setup: [`render.yaml`](/d:/Projects/Qline/render.yaml)
+- All-free demo setup: [`render-free.yaml`](/d:/Projects/Qline/render-free.yaml)
 
 ## Recommended setup
 
@@ -25,11 +28,13 @@ If you want the full production-style setup on Render:
 
 - keep `qline-worker`
 - keep `RUN_WORKERS_IN_API=false`
+- use [`render.yaml`](/d:/Projects/Qline/render.yaml)
 
 If you want the cheapest demo setup:
 
 - do not create the worker service
 - set backend `RUN_WORKERS_IN_API=true`
+- use [`render-free.yaml`](/d:/Projects/Qline/render-free.yaml)
 
 That demo setup is simpler and cheaper, but less production-friendly.
 
@@ -38,9 +43,10 @@ That demo setup is simpler and cheaper, but less production-friendly.
 1. Push this repo to GitHub.
 2. In Render, click `New` -> `Blueprint`.
 3. Connect the repository.
-4. Render will detect [`render.yaml`](/d:/Projects/Qline/render.yaml).
-5. Fill the prompted `sync: false` environment variables.
-6. Deploy.
+4. Render will detect a `render.yaml`-style Blueprint file from the repo.
+5. If you want the free demo setup, temporarily rename [`render-free.yaml`](/d:/Projects/Qline/render-free.yaml) to `render.yaml` before connecting the repo, or use the full setup file and remove the worker service manually in Render.
+6. Fill the prompted `sync: false` environment variables.
+7. Deploy.
 
 ## Environment values to provide
 
@@ -66,6 +72,11 @@ Backend:
 Worker:
 
 - Reuse the same backend secrets and database values.
+
+Free demo setup:
+
+- No separate worker service is created.
+- The backend runs embedded workers because `RUN_WORKERS_IN_API=true`.
 
 ## Auth and CORS notes
 
