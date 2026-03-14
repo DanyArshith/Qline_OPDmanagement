@@ -9,6 +9,20 @@ const { syncDoctorSchedule } = require('../services/doctorScheduleService');
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
 
+const normalizeEmail = (email) => {
+    return typeof email === 'string' ? email.trim().toLowerCase() : email;
+};
+
+const normalizeRequestEmail = (req) => {
+    const normalizedEmail = normalizeEmail(req.body?.email);
+
+    if (typeof normalizedEmail === 'string' && req.body) {
+        req.body.email = normalizedEmail;
+    }
+
+    return normalizedEmail;
+};
+
 const getRefreshCookieOptions = (expiresAt = null) => {
     const isProd = (process.env.NODE_ENV || 'development') === 'production';
     return {
@@ -92,7 +106,8 @@ const queueVerificationEmail = async (user, rawToken) => {
  * @access  Public
  */
 const register = asyncHandler(async (req, res) => {
-    const { name, firstName, lastName, email, password, role } = req.body;
+    const email = normalizeRequestEmail(req);
+    const { name, firstName, lastName, password, role } = req.body;
 
     // Create user
     const user = await User.create({
@@ -161,7 +176,8 @@ const register = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const login = asyncHandler(async (req, res) => {
-    const { email, password } = req.body;
+    const email = normalizeRequestEmail(req);
+    const { password } = req.body;
 
     // Find user and include password field
     const user = await User.findOne({ email }).select('+password');
@@ -364,7 +380,7 @@ const logout = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const forgotPassword = asyncHandler(async (req, res) => {
-    const { email } = req.body;
+    const email = normalizeRequestEmail(req);
 
     // Find user by email
     const user = await User.findOne({ email });
@@ -572,7 +588,7 @@ const verifyEmail = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const resendVerificationEmail = asyncHandler(async (req, res) => {
-    const { email } = req.body;
+    const email = normalizeRequestEmail(req);
     if (!email) {
         res.status(400);
         throw new Error('Email is required');

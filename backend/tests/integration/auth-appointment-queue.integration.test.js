@@ -1,5 +1,6 @@
 const { test, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const request = require('supertest');
 
 const integrationEnabled = process.env.ENABLE_INTEGRATION_TESTS === 'true';
@@ -21,6 +22,7 @@ if (!integrationEnabled) {
     const { createTestApp } = require('../helpers/createTestApp');
     const Appointment = require('../../models/Appointment');
     const DailyQueue = require('../../models/DailyQueue');
+    const User = require('../../models/User');
     const { normalizeDate } = require('../../utils/dateUtils');
 
     ensureTestEnv();
@@ -98,6 +100,115 @@ if (!integrationEnabled) {
             logoutRes.headers['set-cookie']?.some((value) => value.includes(`${cookieName}=;`)),
             'logout did not clear refresh cookie'
         );
+    });
+
+    test('auth normalizes mixed-case emails across register, login, forgot-password, resend verification, and reset-password', async (t) => {
+        if (!dbAvailable) {
+            t.skip(`MongoDB unavailable for integration tests: ${dbConnectError?.message || 'unknown error'}`);
+            return;
+        }
+
+        const agent = request.agent(app);
+        const unique = Date.now();
+        const mixedCaseEmail = `Case.User.${unique}@Example.COM`;
+        const normalizedEmail = mixedCaseEmail.toLowerCase();
+
+        const registerRes = await registerUser(agent, {
+            name: 'Case Test User',
+            email: mixedCaseEmail,
+            password: 'Password123!',
+            role: 'patient',
+        });
+
+        assert.equal(registerRes.body.user.email, normalizedEmail);
+
+        const registeredUser = await User.findOne({ email: normalizedEmail })
+            .select('+emailVerificationToken +emailVerificationExpires')
+            .lean();
+        assert.ok(registeredUser, 'registered user was not found with normalized email');
+        assert.equal(registeredUser.email, normalizedEmail);
+        assert.ok(registeredUser.emailVerificationToken, 'verification token should be created during register');
+
+        const loginRes = await agent.post('/api/auth/login').send({
+            email: normalizedEmail.toUpperCase(),
+            password: 'Password123!',
+        });
+
+        assert.equal(loginRes.status, 200, `login failed: ${JSON.stringify(loginRes.body)}`);
+        assert.equal(loginRes.body.user.email, normalizedEmail);
+
+        const forgotPasswordRes = await agent.post('/api/auth/forgot-password').send({
+            email: normalizedEmail.toUpperCase(),
+        });
+
+        assert.equal(
+            forgotPasswordRes.status,
+            200,
+            `forgot-password failed: ${JSON.stringify(forgotPasswordRes.body)}`
+        );
+
+        const afterForgotPassword = await User.findOne({ email: normalizedEmail })
+            .select('+passwordResetToken +passwordResetExpires +emailVerificationToken')
+            .lean();
+        assert.ok(afterForgotPassword.passwordResetToken, 'forgot-password should store a reset token');
+        assert.ok(afterForgotPassword.passwordResetExpires, 'forgot-password should store a reset expiry');
+
+        const previousVerificationToken = afterForgotPassword.emailVerificationToken;
+
+        const resendVerificationRes = await agent.post('/api/auth/verify-email/resend').send({
+            email: normalizedEmail.toUpperCase(),
+        });
+
+        assert.equal(
+            resendVerificationRes.status,
+            200,
+            `resend verification failed: ${JSON.stringify(resendVerificationRes.body)}`
+        );
+        assert.equal(resendVerificationRes.body.message, 'Verification email sent');
+
+        const afterResendVerification = await User.findOne({ email: normalizedEmail })
+            .select('+emailVerificationToken +emailVerificationExpires')
+            .lean();
+        assert.ok(afterResendVerification.emailVerificationToken, 'resend verification should keep a token');
+        assert.notEqual(
+            afterResendVerification.emailVerificationToken,
+            previousVerificationToken,
+            'resend verification should rotate the token'
+        );
+
+        const resetToken = `reset-token-${unique}`;
+        await User.updateOne(
+            { email: normalizedEmail },
+            {
+                $set: {
+                    passwordResetToken: crypto.createHash('sha256').update(resetToken).digest('hex'),
+                    passwordResetExpires: new Date(Date.now() + 15 * 60 * 1000),
+                },
+            }
+        );
+
+        const resetPasswordRes = await agent.post('/api/auth/reset-password').send({
+            token: resetToken,
+            password: 'NewPassword123!',
+        });
+
+        assert.equal(
+            resetPasswordRes.status,
+            200,
+            `reset-password failed: ${JSON.stringify(resetPasswordRes.body)}`
+        );
+
+        const loginAfterResetRes = await agent.post('/api/auth/login').send({
+            email: mixedCaseEmail,
+            password: 'NewPassword123!',
+        });
+
+        assert.equal(
+            loginAfterResetRes.status,
+            200,
+            `login after reset failed: ${JSON.stringify(loginAfterResetRes.body)}`
+        );
+        assert.equal(loginAfterResetRes.body.user.email, normalizedEmail);
     });
 
     test('doctor can serve a booked patient through queue lifecycle', async (t) => {
