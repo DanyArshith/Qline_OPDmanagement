@@ -103,7 +103,11 @@ module.exports = (io) => {
                 socket.emit('appointment:data', {
                     appointmentId: appointment._id,
                     tokenNumber: appointment.tokenNumber,
-                    status: appointment.status,
+                    status: appointment.status === 'in_progress'
+                        ? 'in_consultation'
+                        : appointment.status === 'booked'
+                            ? 'waiting'
+                            : appointment.status,
                     slotStart: appointment.slotStart,
                     slotEnd: appointment.slotEnd
                 });

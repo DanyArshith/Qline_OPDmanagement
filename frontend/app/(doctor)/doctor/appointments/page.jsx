@@ -14,7 +14,7 @@ import Pagination from '@/components/ui/Pagination'
 import { usePagination } from '@/hooks/usePagination'
 import { PAGE_SIZE } from '@/lib/utils'
 
-const STATUSES = ['', 'booked', 'waiting', 'in_progress', 'completed', 'no_show', 'cancelled']
+const STATUSES = ['', 'booked', 'waiting', 'in_consultation', 'completed', 'no_show', 'cancelled']
 const TODAY = format(new Date(), 'yyyy-MM-dd')
 
 export default function DoctorAppointmentsPage() {

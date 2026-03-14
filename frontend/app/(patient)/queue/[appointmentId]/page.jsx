@@ -20,19 +20,24 @@ export default function QueuePage() {
     const [queueState, setQueueState] = useState(null)
     const [loading, setLoading] = useState(true)
 
-    // Load appointment + wait info
+    const refreshWaitInfo = useCallback(() => {
+        api.get(`/api/appointments/${appointmentId}/wait-info`)
+            .then((res) => setWaitInfo(res.data?.data ?? res.data))
+            .catch(() => {})
+    }, [appointmentId])
+
     const load = useCallback(async () => {
         try {
             const [apptRes, waitRes] = await Promise.all([
                 api.get(`/api/appointments/${appointmentId}`),
                 api.get(`/api/appointments/${appointmentId}/wait-info`),
             ])
+
             const appt = apptRes.data?.data ?? apptRes.data
             const wait = waitRes.data?.data ?? waitRes.data
             setAppointment(appt)
             setWaitInfo(wait)
 
-            // Join doctor room for live updates
             const doctorId = appt?.doctorId?._id ?? appt?.doctorId
             const roomDate = appt?.date ?? appt?.slotStart
             if (doctorId && roomDate) {
@@ -50,25 +55,11 @@ export default function QueuePage() {
         return () => leaveRoom()
     }, [load, leaveRoom])
 
-    /* ── Live socket: queue:update from server ─────────────────────────────── */
-    useSocketEvent('queue:updated', (data) => {
-        setQueueState(data)
-    })
-    useSocketEvent('queue:update', (data) => {
-        setQueueState(data)
-    })
-    useSocketEvent('queue:token-called', (data) => {
-        if (data?.queueState) {
-            setQueueState(data.queueState)
-        } else if (data?.currentToken != null) {
-            setQueueState((prev) => ({ ...(prev || {}), currentToken: data.currentToken }))
-        }
-        api.get(`/api/appointments/${appointmentId}/wait-info`)
-            .then((res) => {
-                const nextWait = res.data?.data ?? res.data
-                setWaitInfo(nextWait)
-            })
-            .catch(() => { })
+    useSocketEvent('queue:updated', setQueueState)
+    useSocketEvent('queue:update', setQueueState)
+    useSocketEvent('queue:token-called', () => {
+        refreshWaitInfo()
+        load()
     })
     useSocketEvent('queue:paused', (data) => {
         setQueueState((prev) => ({ ...(prev || {}), status: data?.status ?? 'paused' }))
@@ -79,12 +70,10 @@ export default function QueuePage() {
     useSocketEvent('queue:closed', (data) => {
         setQueueState((prev) => ({ ...(prev || {}), status: data?.status ?? 'closed' }))
     })
-
-    /* ── Live socket: queue:position-update from server ────────────────────── */
-    useSocketEvent('queue:position-update', (data) => {
-        if (data.appointmentId === appointmentId) {
-            setWaitInfo((prev) => ({ ...prev, ...data }))
-        }
+    useSocketEvent('appointment:status-changed', (data) => {
+        if (data?.appointmentId !== appointmentId) return
+        setAppointment((prev) => prev ? { ...prev, status: data.newStatus } : prev)
+        refreshWaitInfo()
     })
 
     if (loading) {
@@ -95,28 +84,24 @@ export default function QueuePage() {
         )
     }
 
-    const position = waitInfo?.position ?? '—'
+    const position = waitInfo?.position ?? '-'
+    const patientsAhead = waitInfo?.patientsAhead ?? 0
     const estWait = waitInfo?.estimatedWait
-    const currentToken = queueState?.currentToken ?? '—'
+    const currentToken = waitInfo?.currentToken ?? queueState?.currentToken ?? '-'
     const myToken = appointment?.tokenNumber
 
     return (
-        <div className="max-w-lg mx-auto space-y-6">
-            {/* Current serving */}
-            <Card className="text-center p-8">
-                <p className="text-caption text-text-secondary uppercase tracking-wider mb-2">
+        <div className="mx-auto max-w-lg space-y-6">
+            <Card className="p-8 text-center">
+                <p className="mb-2 text-caption uppercase tracking-wider text-text-secondary">
                     Now Serving
                 </p>
-                <div className="text-[72px] font-bold text-primary leading-none">
+                <div className="text-[72px] font-bold leading-none text-primary">
                     {currentToken}
                 </div>
-                <Badge
-                    status={queueState?.status ?? 'active'}
-                    className="mt-4"
-                />
+                <Badge status={queueState?.status ?? 'active'} className="mt-4" />
             </Card>
 
-            {/* My token */}
             <Card>
                 <div className="flex items-center justify-between">
                     <div>
@@ -124,36 +109,49 @@ export default function QueuePage() {
                         <p className="text-h1 font-bold text-text-primary">#{myToken}</p>
                     </div>
                     <div className="text-right">
-                        <p className="text-caption text-text-secondary">Position</p>
-                        <p className="text-h2 font-semibold text-text-primary">
+                        <p className="text-caption text-text-secondary">Patients Ahead</p>
+                        <p className="text-h2 font-semibold text-text-primary">{patientsAhead}</p>
+                    </div>
+                </div>
+            </Card>
+
+            <Card>
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-caption text-text-secondary">Queue Position</p>
+                        <p className="text-h3 font-semibold text-text-primary">
                             {typeof position === 'number' ? `#${position}` : position}
+                        </p>
+                    </div>
+                    <div className="text-right">
+                        <p className="text-caption text-text-secondary">Doctor</p>
+                        <p className="text-body font-semibold text-text-primary">
+                            {drName(appointment?.doctorId?.name)}
                         </p>
                     </div>
                 </div>
             </Card>
 
-            {/* Wait time + appointment details */}
             <div className="grid grid-cols-2 gap-4">
                 <Card className="text-center">
-                    <p className="text-caption text-text-secondary mb-1">Est. Wait</p>
+                    <p className="mb-1 text-caption text-text-secondary">Estimated Wait</p>
                     <p className="text-h2 font-semibold text-text-primary">
-                        {estWait != null ? `${estWait} min` : '—'}
+                        {estWait != null ? `${estWait} min` : '-'}
                     </p>
                 </Card>
                 <Card className="text-center">
-                    <p className="text-caption text-text-secondary mb-1">Your Slot</p>
+                    <p className="mb-1 text-caption text-text-secondary">Your Slot</p>
                     <p className="text-h3 font-semibold text-text-primary">
-                        {appointment?.slotStart ? formatTime(appointment.slotStart) : '—'}
+                        {appointment?.slotStart ? formatTime(appointment.slotStart) : '-'}
                     </p>
                 </Card>
             </div>
 
-            {/* Status */}
             <Card>
                 <div className="flex items-center justify-between">
                     <div>
                         <p className="text-body font-medium text-text-primary">Appointment Status</p>
-                        <p className="text-caption text-text-secondary mt-0.5">
+                        <p className="mt-0.5 text-caption text-text-secondary">
                             {drName(appointment?.doctorId?.name)}
                         </p>
                     </div>
@@ -161,9 +159,8 @@ export default function QueuePage() {
                 </div>
             </Card>
 
-            {/* Live indicator */}
             <div className="flex items-center justify-center gap-2 text-caption text-text-secondary">
-                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                <span className="h-2 w-2 animate-pulse rounded-full bg-success" />
                 Updates live via socket
             </div>
         </div>

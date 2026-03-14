@@ -408,7 +408,7 @@ exports.getLiveQueues = asyncHandler(async (req, res) => {
         waitingCount: (q.waitingList || []).filter(item => item.status === 'waiting').length,
         completedCount: (q.waitingList || []).filter(item => item.status === 'completed').length,
         currentAppointment: (() => {
-            const inProgress = (q.waitingList || []).find(item => item.status === 'in_progress');
+            const inProgress = (q.waitingList || []).find(item => ['in_progress', 'in_consultation'].includes(item.status));
             if (!inProgress) return null;
             return {
                 appointmentId: inProgress.appointmentId,

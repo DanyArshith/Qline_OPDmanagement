@@ -17,14 +17,15 @@ if (!integrationEnabled) {
         connectTestDb,
         clearTestDb,
         disconnectTestDb,
-        isReplicaSetConnection,
     } = require('../helpers/testDb');
     const { createTestApp } = require('../helpers/createTestApp');
+    const Appointment = require('../../models/Appointment');
+    const DailyQueue = require('../../models/DailyQueue');
+    const { normalizeDate } = require('../../utils/dateUtils');
 
     ensureTestEnv();
 
     const app = createTestApp();
-    let transactionCapable = false;
     let dbAvailable = false;
     let dbConnectError = null;
 
@@ -39,7 +40,6 @@ if (!integrationEnabled) {
     before(async () => {
         try {
             await connectTestDb();
-            transactionCapable = await isReplicaSetConnection();
             dbAvailable = true;
         } catch (error) {
             dbConnectError = error;
@@ -106,11 +106,6 @@ if (!integrationEnabled) {
             return;
         }
 
-        if (!transactionCapable) {
-            t.skip('MongoDB replica set is required for appointment/queue transaction tests');
-            return;
-        }
-
         const doctorAgent = request.agent(app);
         const patientAgent = request.agent(app);
         const unique = Date.now();
@@ -147,10 +142,12 @@ if (!integrationEnabled) {
         const doctorId = doctorConfigRes.body.doctor.id;
         assert.ok(doctorId, 'doctorId missing after schedule configuration');
 
-        const nextDay = new Date();
-        nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-        nextDay.setUTCHours(0, 0, 0, 0);
-        const date = nextDay.toISOString().split('T')[0];
+        const nextWorkingDay = new Date();
+        nextWorkingDay.setUTCHours(0, 0, 0, 0);
+        do {
+            nextWorkingDay.setUTCDate(nextWorkingDay.getUTCDate() + 1);
+        } while ([0, 6].includes(nextWorkingDay.getUTCDay()));
+        const date = nextWorkingDay.toISOString().split('T')[0];
 
         const slotStart = new Date(`${date}T10:00:00.000Z`);
         const slotEnd = new Date(`${date}T10:15:00.000Z`);
@@ -207,5 +204,174 @@ if (!integrationEnabled) {
 
         assert.equal(appointmentRes.status, 200, `appointment read failed: ${JSON.stringify(appointmentRes.body)}`);
         assert.equal(appointmentRes.body.data.status, 'completed');
+    });
+
+    test('doctor can reassign a pending appointment to the next available slot', async (t) => {
+        if (!dbAvailable) {
+            t.skip(`MongoDB unavailable for integration tests: ${dbConnectError?.message || 'unknown error'}`);
+            return;
+        }
+
+        const doctorAgent = request.agent(app);
+        const patientAgent = request.agent(app);
+        const unique = Date.now();
+
+        const doctorRegister = await registerUser(doctorAgent, {
+            name: 'Reassign Doctor',
+            email: `reassign.doctor.${unique}@example.com`,
+            password: 'Password123!',
+            role: 'doctor',
+        });
+
+        const patientRegister = await registerUser(patientAgent, {
+            name: 'Reassign Patient',
+            email: `reassign.patient.${unique}@example.com`,
+            password: 'Password123!',
+            role: 'patient',
+        });
+
+        const doctorAccessToken = doctorRegister.body.accessToken;
+        const patientAccessToken = patientRegister.body.accessToken;
+
+        const doctorConfigRes = await doctorAgent
+            .post('/api/doctors/configure')
+            .set('Authorization', `Bearer ${doctorAccessToken}`)
+            .send({
+                department: 'General Medicine',
+                workingHours: { start: '09:00', end: '11:00' },
+                breakSlots: [],
+                defaultConsultTime: 15,
+                maxPatientsPerDay: 20,
+                workingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+            });
+
+        assert.equal(doctorConfigRes.status, 200, `doctor config failed: ${JSON.stringify(doctorConfigRes.body)}`);
+        const doctorId = doctorConfigRes.body.doctor.id;
+
+        const nextWorkingDay = new Date();
+        nextWorkingDay.setUTCHours(0, 0, 0, 0);
+        do {
+            nextWorkingDay.setUTCDate(nextWorkingDay.getUTCDate() + 1);
+        } while ([0, 6].includes(nextWorkingDay.getUTCDay()));
+        const date = nextWorkingDay.toISOString().split('T')[0];
+
+        const slotStart = new Date(`${date}T09:00:00.000Z`);
+        const slotEnd = new Date(`${date}T09:15:00.000Z`);
+
+        const bookingRes = await patientAgent
+            .post('/api/appointments/book')
+            .set('Authorization', `Bearer ${patientAccessToken}`)
+            .send({
+                doctorId,
+                date,
+                slotStart: slotStart.toISOString(),
+                slotEnd: slotEnd.toISOString(),
+            });
+
+        assert.equal(bookingRes.status, 201, `booking failed: ${JSON.stringify(bookingRes.body)}`);
+        const appointmentId = bookingRes.body.appointment._id;
+
+        const reassignRes = await doctorAgent
+            .post(`/api/appointments/${appointmentId}/reassign-next-available`)
+            .set('Authorization', `Bearer ${doctorAccessToken}`)
+            .send({});
+
+        assert.equal(reassignRes.status, 200, `reassign failed: ${JSON.stringify(reassignRes.body)}`);
+        assert.equal(reassignRes.body.appointment.status, 'waiting');
+        assert.notEqual(
+            new Date(reassignRes.body.appointment.slotStart).toISOString(),
+            slotStart.toISOString(),
+            'slotStart should change after reassignment'
+        );
+    });
+
+    test('doctor schedule load auto-carries past pending appointments forward', async (t) => {
+        if (!dbAvailable) {
+            t.skip(`MongoDB unavailable for integration tests: ${dbConnectError?.message || 'unknown error'}`);
+            return;
+        }
+
+        const doctorAgent = request.agent(app);
+        const patientAgent = request.agent(app);
+        const unique = Date.now();
+
+        const doctorRegister = await registerUser(doctorAgent, {
+            name: 'Auto Carry Doctor',
+            email: `autocarry.doctor.${unique}@example.com`,
+            password: 'Password123!',
+            role: 'doctor',
+        });
+
+        const patientRegister = await registerUser(patientAgent, {
+            name: 'Auto Carry Patient',
+            email: `autocarry.patient.${unique}@example.com`,
+            password: 'Password123!',
+            role: 'patient',
+        });
+
+        const doctorAccessToken = doctorRegister.body.accessToken;
+        const patientId = patientRegister.body.user.id;
+
+        const doctorConfigRes = await doctorAgent
+            .post('/api/doctors/configure')
+            .set('Authorization', `Bearer ${doctorAccessToken}`)
+            .send({
+                department: 'General Medicine',
+                workingHours: { start: '09:00', end: '11:00' },
+                breakSlots: [],
+                defaultConsultTime: 15,
+                maxPatientsPerDay: 20,
+                workingDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+            });
+
+        assert.equal(doctorConfigRes.status, 200, `doctor config failed: ${JSON.stringify(doctorConfigRes.body)}`);
+        const doctorId = doctorConfigRes.body.doctor.id;
+
+        const previousWorkingDay = new Date();
+        previousWorkingDay.setUTCHours(0, 0, 0, 0);
+        do {
+            previousWorkingDay.setUTCDate(previousWorkingDay.getUTCDate() - 1);
+        } while ([0, 6].includes(previousWorkingDay.getUTCDay()));
+
+        const pastSlotStart = new Date(`${previousWorkingDay.toISOString().split('T')[0]}T09:00:00.000Z`);
+        const pastSlotEnd = new Date(`${previousWorkingDay.toISOString().split('T')[0]}T09:15:00.000Z`);
+
+        const appointment = await Appointment.create({
+            doctorId,
+            patientId,
+            date: previousWorkingDay,
+            slotStart: pastSlotStart,
+            slotEnd: pastSlotEnd,
+            tokenNumber: 1,
+            status: 'waiting',
+        });
+
+        await DailyQueue.create({
+            doctorId,
+            date: previousWorkingDay,
+            currentToken: null,
+            appointmentCount: 1,
+            lastTokenNumber: 1,
+            waitingList: [{
+                appointmentId: appointment._id,
+                tokenNumber: 1,
+                status: 'waiting',
+            }],
+            status: 'active',
+        });
+
+        const scheduleRes = await doctorAgent
+            .get('/api/doctors/my-schedule')
+            .set('Authorization', `Bearer ${doctorAccessToken}`);
+
+        assert.equal(scheduleRes.status, 200, `my-schedule failed: ${JSON.stringify(scheduleRes.body)}`);
+        assert.equal(scheduleRes.body.autoReassignedAppointments, 1);
+
+        const movedAppointment = await Appointment.findById(appointment._id).lean();
+        assert.equal(movedAppointment.status, 'waiting');
+        assert.ok(
+            normalizeDate(movedAppointment.date).getTime() > normalizeDate(previousWorkingDay).getTime(),
+            'appointment date should move to a future day'
+        );
     });
 }

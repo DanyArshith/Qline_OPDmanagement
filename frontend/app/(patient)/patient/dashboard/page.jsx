@@ -12,7 +12,7 @@ import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import { ErrorState, LoadingState } from '@/components/ui/AsyncState'
 
-const UPCOMING_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
+const UPCOMING_STATUSES = new Set(['booked', 'waiting', 'in_consultation', 'in_progress'])
 
 function pickUpcomingAppointments(list) {
     return [...list]

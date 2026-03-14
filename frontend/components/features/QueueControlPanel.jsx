@@ -1,78 +1,80 @@
 'use client'
 
+import Link from 'next/link'
 import { useState } from 'react'
-import { cn, formatTime, getInitials } from '@/lib/utils'
+import { formatTime, getInitials } from '@/lib/utils'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import { ConfirmModal } from '@/components/ui/Modal'
 
 export default function QueueControlPanel({
     currentAppointment,
+    nextAppointment,
+    queueList = [],
     queueState,
     onCallNext,
     onComplete,
     onNoShow,
     onPause,
     onResume,
+    medicalRecordHref,
     loading = {},
 }) {
-    const [confirm, setConfirm] = useState(null) // { action, label }
+    const [confirm, setConfirm] = useState(null)
     const isPaused = queueState?.status === 'paused'
     const waitingCount = queueState?.waitingCount ?? queueState?.counts?.waiting ?? 0
 
-    const handleAction = (action) => {
-        const map = {
-            complete: { action: 'complete', label: 'Mark as Completed' },
-            no_show: { action: 'no_show', label: 'Mark as No-Show' },
-        }
-        setConfirm(map[action])
-    }
-
     const executeConfirm = async () => {
-        if (confirm?.action === 'complete') await onComplete()
-        if (confirm?.action === 'no_show') await onNoShow()
+        if (confirm === 'complete') await onComplete()
+        if (confirm === 'no_show') await onNoShow()
         setConfirm(null)
     }
 
     return (
         <>
-            <div className="bg-surface rounded-lg shadow-1 p-5 space-y-5">
-                {/* Live stats */}
+            <div className="space-y-5 rounded-lg bg-surface p-5 shadow-1">
                 <div className="grid grid-cols-3 gap-0 divide-x divide-border text-center">
-                    <StatCell label="Serving" value={queueState?.currentToken ?? '—'} />
+                    <StatCell label="Current" value={queueState?.currentToken ?? '-'} />
                     <StatCell label="Waiting" value={waitingCount} />
-                    <StatCell
-                        label="Status"
-                        value={
-                            <Badge status={queueState?.status ?? 'active'} />
-                        }
-                    />
+                    <StatCell label="Status" value={<Badge status={queueState?.status ?? 'active'} />} />
                 </div>
 
-                {/* Current patient */}
-                {currentAppointment ? (
-                    <div className="flex items-center gap-3 p-3 bg-primary-soft rounded-lg">
-                        <div className="w-10 h-10 rounded-full bg-primary/20 text-primary font-semibold text-body flex items-center justify-center shrink-0">
-                            {getInitials(currentAppointment.patientId?.name || '?')}
-                        </div>
-                        <div className="min-w-0">
-                            <p className="text-body-lg font-semibold text-text-primary truncate">
-                                {currentAppointment.patientId?.name || 'Unknown'}
-                            </p>
-                            <p className="text-caption text-text-secondary">
-                                Token #{currentAppointment.tokenNumber} ·{' '}
-                                {formatTime(currentAppointment.slotStart)}
-                            </p>
-                        </div>
-                        <Badge status={currentAppointment.priority || 'standard'} className="ml-auto" />
-                    </div>
-                ) : (
-                    <div className="text-center py-4 text-text-secondary text-body">
-                        No patient currently being seen
-                    </div>
-                )}
+                <QueuePersonCard
+                    title="Current Patient"
+                    appointment={currentAppointment}
+                    emptyLabel="No patient currently in consultation"
+                />
 
-                {/* Actions */}
+                <QueuePersonCard
+                    title="Next Patient"
+                    appointment={nextAppointment}
+                    emptyLabel="No patient waiting"
+                />
+
+                <div className="rounded-lg border border-border bg-bg p-3">
+                    <div className="flex items-center justify-between gap-3">
+                        <p className="text-caption text-text-secondary">Queue List</p>
+                        <span className="text-caption font-medium text-text-primary">{queueList.length}</span>
+                    </div>
+                    {queueList.length ? (
+                        <div className="mt-3 space-y-2">
+                            {queueList.map((appointment) => (
+                                <div key={appointment._id} className="flex items-center justify-between gap-3 rounded-md bg-surface px-3 py-2">
+                                    <div className="min-w-0">
+                                        <p className="truncate text-body font-medium text-text-primary">
+                                            {appointment.patientId?.name || appointment.patientName || 'Patient'}
+                                        </p>
+                                        <p className="text-caption text-text-secondary">Token #{appointment.tokenNumber}</p>
+                                    </div>
+                                    <Badge status={appointment.status} />
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="mt-2 text-body text-text-secondary">Queue is empty</p>
+                    )}
+                </div>
+
                 <div className="flex flex-col gap-2">
                     <Button
                         fullWidth
@@ -83,24 +85,33 @@ export default function QueueControlPanel({
                         Call Next Patient
                     </Button>
 
-                    {currentAppointment && (
-                        <div className="grid grid-cols-2 gap-2">
-                            <Button
-                                variant="secondary"
-                                onClick={() => handleAction('complete')}
-                                loading={loading.complete}
-                            >
-                                ✓ Complete
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                onClick={() => handleAction('no_show')}
-                                loading={loading.noShow}
-                            >
-                                ✗ No-Show
-                            </Button>
-                        </div>
-                    )}
+                    {currentAppointment ? (
+                        <>
+                            {medicalRecordHref ? (
+                                <Link href={medicalRecordHref}>
+                                    <Button variant="secondary" className="w-full">
+                                        Add Medical Record
+                                    </Button>
+                                </Link>
+                            ) : null}
+                            <div className="grid grid-cols-2 gap-2">
+                                <Button
+                                    variant="secondary"
+                                    onClick={() => setConfirm('complete')}
+                                    loading={loading.complete}
+                                >
+                                    Mark Complete
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    onClick={() => setConfirm('no_show')}
+                                    loading={loading.noShow}
+                                >
+                                    Mark No-Show
+                                </Button>
+                            </div>
+                        </>
+                    ) : null}
 
                     <Button
                         variant={isPaused ? 'primary' : 'secondary'}
@@ -108,7 +119,7 @@ export default function QueueControlPanel({
                         onClick={isPaused ? onResume : onPause}
                         loading={loading.pause}
                     >
-                        {isPaused ? '▶ Resume Queue' : '⏸ Pause Queue'}
+                        {isPaused ? 'Resume Queue' : 'Pause Queue'}
                     </Button>
                 </div>
             </div>
@@ -117,7 +128,7 @@ export default function QueueControlPanel({
                 isOpen={!!confirm}
                 onClose={() => setConfirm(null)}
                 onConfirm={executeConfirm}
-                title={confirm?.label}
+                title={confirm === 'complete' ? 'Mark as Completed' : 'Mark as No-Show'}
                 message="This action cannot be undone."
                 confirmLabel="Yes, confirm"
                 loading={loading.complete || loading.noShow}
@@ -126,10 +137,37 @@ export default function QueueControlPanel({
     )
 }
 
+function QueuePersonCard({ title, appointment, emptyLabel }) {
+    return (
+        <div className="rounded-lg border border-border bg-bg p-3">
+            <p className="text-caption text-text-secondary">{title}</p>
+            {appointment ? (
+                <div className="mt-2 flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/20 text-body font-semibold text-primary">
+                        {getInitials(appointment.patientId?.name || appointment.patientName || 'P')}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                        <p className="truncate text-body-lg font-semibold text-text-primary">
+                            {appointment.patientId?.name || appointment.patientName || 'Patient'}
+                        </p>
+                        <p className="text-caption text-text-secondary">
+                            Token #{appointment.tokenNumber}
+                            {appointment.slotStart ? ` | ${formatTime(appointment.slotStart)}` : ''}
+                        </p>
+                    </div>
+                    <Badge status={appointment.status || 'waiting'} />
+                </div>
+            ) : (
+                <p className="mt-2 text-body text-text-secondary">{emptyLabel}</p>
+            )}
+        </div>
+    )
+}
+
 function StatCell({ label, value }) {
     return (
         <div className="px-4 py-2">
-            <p className="text-caption text-text-secondary mb-1">{label}</p>
+            <p className="mb-1 text-caption text-text-secondary">{label}</p>
             <div className="text-h2 font-semibold text-text-primary">{value}</div>
         </div>
     )

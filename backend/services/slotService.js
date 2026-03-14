@@ -10,7 +10,7 @@ const {
     isDateWithinRange,
 } = require('../utils/dateUtils');
 
-const ACTIVE_APPOINTMENT_STATUSES = ['booked', 'waiting', 'in_progress'];
+const ACTIVE_APPOINTMENT_STATUSES = ['booked', 'waiting', 'in_progress', 'in_consultation'];
 
 const isDoctorConfigured = (doctor) => (
     Boolean(

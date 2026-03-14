@@ -1,12 +1,56 @@
-const mongoose = require('mongoose');
 const DailyQueue = require('../models/DailyQueue');
 const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 const QueueEvent = require('../models/QueueEvent');
+const ConsultationHistory = require('../models/ConsultationHistory');
 const notificationService = require('./notificationService');
-const { normalizeDate, parseTimeString } = require('../utils/dateUtils');
+const estimationService = require('./estimationService');
+const cacheManager = require('../utils/cacheManager');
+const { normalizeDate } = require('../utils/dateUtils');
+const { withOptionalTransaction } = require('../utils/transactionManager');
 
-const toObjectId = (value) => (value && typeof value === 'object' && value._id ? value._id : value);
+const WAITING_STATUSES = ['waiting', 'booked'];
+const ACTIVE_CONSULTATION_STATUSES = ['in_consultation', 'in_progress'];
+const CLOSED_APPOINTMENT_STATUSES = ['completed', 'cancelled', 'no_show'];
+
+const withSession = (session) => (session ? { session } : {});
+const toRoomDate = (date) => normalizeDate(date).toISOString().split('T')[0];
+
+const safePopulatePatient = (query) => query.populate('patientId', 'name email');
+
+const createQueueIfMissing = async (doctorId, date, session = null) => {
+    let queue = await DailyQueue.findOne({ doctorId, date }, null, withSession(session));
+
+    if (!queue) {
+        const existingAppointments = await Appointment.find({
+            doctorId,
+            date,
+            status: { $ne: 'cancelled' },
+        }, null, withSession(session)).sort({ tokenNumber: 1 });
+
+        queue = new DailyQueue({
+            doctorId,
+            date,
+            currentToken: null,
+            appointmentCount: existingAppointments.length,
+            lastTokenNumber: existingAppointments.at(-1)?.tokenNumber || 0,
+            waitingList: existingAppointments.map((appointment) => ({
+                appointmentId: appointment._id,
+                tokenNumber: appointment.tokenNumber,
+                status: ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)
+                    ? 'in_consultation'
+                    : appointment.status === 'booked'
+                        ? 'waiting'
+                        : appointment.status,
+            })),
+            status: existingAppointments.length ? 'active' : 'closed',
+        });
+
+        await queue.save(withSession(session));
+    }
+
+    return queue;
+};
 
 const recordQueueEvent = async ({
     appointmentId,
@@ -16,846 +60,514 @@ const recordQueueEvent = async ({
     event,
     previousEvent,
     metadata = {},
-    session,
+    session = null,
 }) => {
-    await QueueEvent.create([{
+    const payload = {
         appointmentId,
         doctorId,
-        patientId: toObjectId(patientId),
+        patientId,
         queueId,
         event,
         previousEvent,
         timestamp: new Date(),
         metadata,
-    }], { session });
+    };
+
+    if (session) {
+        await QueueEvent.create([payload], { session });
+        return;
+    }
+
+    await QueueEvent.create(payload);
 };
 
-/**
- * Call Next Patient - Atomically promote next waiting patient
- * CRITICAL: Full race protection with idempotency, rate limiting, and working hours validation
- */
-const callNextPatient = async (doctorId, date, io, req) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+const buildQueueStateInternal = async (doctorId, date, session = null) => {
+    const normalizedDate = normalizeDate(date);
+    const queue = await createQueueIfMissing(doctorId, normalizedDate, session);
 
-    try {
-        const normalizedDate = normalizeDate(new Date(date));
-
-        // Fetch queue
-        const queue = await DailyQueue.findOne({
-            doctorId,
-            date: normalizedDate
-        }).session(session);
-
-        if (!queue) throw new Error('Queue not found');
-
-        // CRITICAL: Verify doctor ownership (never trust routing layer alone)
-        if (queue.doctorId.toString() !== doctorId.toString()) {
-            throw new Error('Unauthorized queue access');
-        }
-
-        // CRITICAL: Validate queue is active
-        if (queue.status !== 'active') {
-            throw new Error(`Queue is ${queue.status}. Cannot call next patient.`);
-        }
-
-        // CRITICAL: Check working hours BEFORE any atomic operations
-        // Prevents promoting patient then auto-closing (inconsistent state)
-        const doctor = await Doctor.findById(doctorId).session(session);
-        const workEndUTC = parseTimeString(doctor.workingHours.end, normalizedDate);
-
-        if (new Date() > workEndUTC) {
-            queue.status = 'closed';
-
-            const response = {
-                success: true,
-                queueClosed: true,
-                reason: 'past_working_hours',
-                message: 'Queue closed: past working hours'
-            };
-
-            // CRITICAL: Store idempotency data for working hours closure
-            const clientActionId = req.headers['x-action-id'];
-            if (clientActionId) {
-                queue.lastCallNextId = clientActionId;
-                queue.lastCallNextResponse = response;
-            }
-            await queue.save({ session });
-
-            await session.commitTransaction();
-
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:closed', {
-                reason: 'past_working_hours',
-                timestamp: new Date()
-            });
-
-            return response;
-        }
-
-        // CRITICAL: Atomic idempotency + rate limiting in ONE operation
-        // This prevents race between idempotency check and rate limit update
-        const clientActionId = req.headers['x-action-id'];
-        if (!clientActionId) {
-            throw new Error('X-Action-ID header required for idempotency');
-        }
-
-        const rateLimitAndIdempotency = await DailyQueue.findOneAndUpdate(
-            {
-                _id: queue._id,
-                // Atomic conditions:
-                // 1. Action ID is different (idempotency)
-                // 2. Rate limit window passed (1 second)
-                lastCallNextId: { $ne: clientActionId },
-                $or: [
-                    { lastActionAt: { $exists: false } },
-                    { lastActionAt: { $lt: new Date(Date.now() - 1000) } }
-                ]
-            },
-            {
-                $set: {
-                    lastActionAt: new Date(),
-                    lastCallNextId: clientActionId  // Per-action-type ID
-                }
-            },
-            { session, new: true }
-        );
-
-        if (!rateLimitAndIdempotency) {
-            // Check if it's duplicate or rate limit
-            if (queue.lastCallNextId === clientActionId) {
-                // Duplicate request - return cached response
-                return queue.lastCallNextResponse || {
-                    success: true,
-                    message: 'Duplicate request - action already performed'
-                };
-            } else {
-                // Rate limit hit
-                throw new Error('Action too fast. Please wait 1 second.');
-            }
-        }
-
-        // CRITICAL: Use updated queue document from findOneAndUpdate
-        // The returned document has lastActionAt and lastCallNextId updated
-        const updatedQueue = rateLimitAndIdempotency;
-
-        // CRITICAL: Smart zombie detection with socket tracking
-        // Only auto-complete if:
-        // 1. Appointment is stale (>30 minutes)
-        // 2. AND no active doctor socket connected
-        const zombieThreshold = new Date(Date.now() - 30 * 60 * 1000); // 30 minutes
-        const zombieInProgress = await Appointment.findOne({
+    const appointments = await safePopulatePatient(
+        Appointment.find({
             doctorId,
             date: normalizedDate,
-            status: 'in_progress',
-            updatedAt: { $lt: zombieThreshold }
-        }).session(session);
+        }, null, withSession(session)).sort({ tokenNumber: 1 })
+    ).lean();
 
-        if (zombieInProgress) {
-            // Check if doctor has active socket (prevents auto-completing long consultations)
-            const activeDoctorSockets = io.sockets.adapter.rooms.get(`doctor:${doctorId}:${date}`);
-            const doctorSocketActive = activeDoctorSockets && activeDoctorSockets.size > 0;
+    const normalizedAppointments = appointments.map((appointment) => ({
+        ...appointment,
+        status: appointment.status === 'booked'
+            ? 'waiting'
+            : ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)
+                ? 'in_consultation'
+                : appointment.status,
+    }));
 
-            if (!doctorSocketActive) {
-                // No active doctor socket - safe to auto-complete
-                zombieInProgress.status = 'completed';
-                await zombieInProgress.save({ session });
+    const currentAppointment = normalizedAppointments.find((appointment) => appointment.status === 'in_consultation') || null;
+    const waitingAppointments = normalizedAppointments.filter((appointment) => appointment.status === 'waiting');
+    const nextPatient = waitingAppointments[0] || null;
+    const activeQueue = normalizedAppointments.filter((appointment) => (
+        appointment.status === 'waiting' || appointment.status === 'in_consultation'
+    ));
 
-                // CRITICAL: Keep waitingList consistent (until future refactor)
-                await DailyQueue.findOneAndUpdate(
-                    { doctorId, date: normalizedDate },
-                    {
-                        $set: {
-                            'waitingList.$[elem].status': 'completed'
-                        }
-                    },
-                    {
-                        arrayFilters: [{ 'elem.appointmentId': zombieInProgress._id }],
-                        session
-                    }
-                );
+    const averageConsultationTime = await estimationService.getAverageConsultTime(doctorId);
+    const estimatedWaitMinutes = waitingAppointments.length * averageConsultationTime;
+    const completedCount = normalizedAppointments.filter((appointment) => appointment.status === 'completed').length;
+    const noShowCount = normalizedAppointments.filter((appointment) => appointment.status === 'no_show').length;
+    const cancelledCount = normalizedAppointments.filter((appointment) => appointment.status === 'cancelled').length;
 
-                await recordQueueEvent({
-                    appointmentId: zombieInProgress._id,
-                    doctorId,
-                    patientId: zombieInProgress.patientId,
-                    queueId: updatedQueue._id,
-                    event: 'completed',
-                    previousEvent: 'in_progress',
-                    metadata: {
-                        tokenNumber: zombieInProgress.tokenNumber,
-                        delayReason: 'auto_completed_stale_session',
-                    },
-                    session,
-                });
+    queue.currentToken = currentAppointment?.tokenNumber ?? queue.currentToken ?? null;
+    queue.appointmentCount = normalizedAppointments.filter((appointment) => appointment.status !== 'cancelled').length;
+    queue.lastTokenNumber = normalizedAppointments.at(-1)?.tokenNumber || queue.lastTokenNumber || 0;
+    queue.waitingList = normalizedAppointments.map((appointment) => ({
+        appointmentId: appointment._id,
+        tokenNumber: appointment.tokenNumber,
+        status: appointment.status,
+    }));
+
+    if (activeQueue.length === 0) {
+        queue.status = 'closed';
+    } else if (queue.status === 'closed') {
+        queue.status = 'active';
+    }
+
+    await queue.save(withSession(session));
+
+    return {
+        doctorId,
+        date: normalizedDate,
+        status: queue.status,
+        currentToken: currentAppointment?.tokenNumber ?? queue.currentToken ?? null,
+        currentPatient: currentAppointment
+            ? {
+                _id: currentAppointment._id,
+                tokenNumber: currentAppointment.tokenNumber,
+                patientId: currentAppointment.patientId,
+                patientName: currentAppointment.patientId?.name || 'Patient',
+                slotStart: currentAppointment.slotStart,
+                status: currentAppointment.status,
             }
-            // else: doctor socket is active, they might just be taking longer - don't auto-complete
-        }
-
-        // CRITICAL: Check no patient currently in progress
-        const existingInProgress = await Appointment.findOne({
-            doctorId,
-            date: normalizedDate,
-            status: 'in_progress'
-        }).session(session);
-
-        if (existingInProgress) {
-            throw new Error('A patient is already being served');
-        }
-
-        // CRITICAL: Atomic selection + update (prevents multi-device race)
-        // Phase 5.2: Priority-aware ordering: emergency > senior > standard, then by tokenNumber
-        // MongoDB sort maps: emergency=1, senior=2, standard=3 alphabetically works but fragile.
-        // Use a two-field sort: priority ASC (emergency < senior < standard alphabetically) + tokenNumber ASC
-        const nextAppointment = await Appointment.findOneAndUpdate(
-            {
-                doctorId,
-                date: normalizedDate,
-                status: 'waiting'
-            },
-            {
-                $set: { status: 'in_progress', consultationStartTime: new Date() }
-            },
-            {
-                sort: { priority: 1, tokenNumber: 1 }, // priority: emergency < senior < standard
-                session,
-                new: true
+            : null,
+        currentAppointment,
+        nextPatient: nextPatient
+            ? {
+                _id: nextPatient._id,
+                tokenNumber: nextPatient.tokenNumber,
+                patientId: nextPatient.patientId,
+                patientName: nextPatient.patientId?.name || 'Patient',
+                slotStart: nextPatient.slotStart,
+                status: nextPatient.status,
             }
-        ).populate('patientId', 'name email');
+            : null,
+        queueList: activeQueue.map((appointment) => ({
+            _id: appointment._id,
+            tokenNumber: appointment.tokenNumber,
+            patientId: appointment.patientId,
+            patientName: appointment.patientId?.name || 'Patient',
+            slotStart: appointment.slotStart,
+            status: appointment.status,
+            priority: appointment.priority || 'standard',
+            priorityNote: appointment.priorityNote || '',
+        })),
+        waitingList: waitingAppointments.map((appointment) => ({
+            tokenNumber: appointment.tokenNumber,
+            patientName: appointment.patientId?.name || 'Patient',
+            priority: appointment.priority || 'standard',
+        })),
+        appointments: normalizedAppointments,
+        averageConsultationTime,
+        estimatedWaitMinutes,
+        waitingCount: waitingAppointments.length,
+        patientsWaiting: waitingAppointments.length,
+        counts: {
+            waiting: waitingAppointments.length,
+            inConsultation: currentAppointment ? 1 : 0,
+            inProgress: currentAppointment ? 1 : 0,
+            completed: completedCount,
+            noShow: noShowCount,
+            cancelled: cancelledCount,
+            total: normalizedAppointments.length,
+        },
+    };
+};
 
-        if (!nextAppointment) {
-            // No waiting patients - auto-close queue
-            updatedQueue.status = 'closed';
+const emitQueueUpdated = async (doctorId, date, io) => {
+    if (!io) {
+        return null;
+    }
 
-            // Build response
-            const response = {
-                success: true,
-                queueClosed: true,
-                message: 'No patients waiting. Queue closed.',
-                currentToken: updatedQueue.currentToken
-            };
+    const state = await buildQueueStateInternal(doctorId, date);
+    const roomDate = toRoomDate(date);
+    io.to(`doctor:${doctorId}:${roomDate}`).emit('queue:updated', state);
+    io.to(`doctor:${doctorId}:${roomDate}`).emit('queue:update', state);
+    return state;
+};
 
-            // CRITICAL: Store response in transaction for idempotency
-            updatedQueue.lastCallNextResponse = response;
-            await updatedQueue.save({ session });
+const updateIdempotency = async (queue, fields, session = null) => {
+    Object.assign(queue, fields);
+    await queue.save(withSession(session));
+};
 
-            await session.commitTransaction();
-
-            // CRITICAL: Broadcast queue closure (real-time)
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:closed', {
+const promoteNextWaitingAppointment = async (doctorId, date, queue, session = null) => {
+    const nextAppointment = await safePopulatePatient(
+        Appointment.findOneAndUpdate(
+            {
                 doctorId,
                 date,
-                reason: 'no_waiting_patients',
-                timestamp: new Date()
-            });
-
-            return response;
-        }
-
-        // Update queue currentToken (action ID already stored via atomic update)
-        updatedQueue.currentToken = nextAppointment.tokenNumber;
-
-        // Update waitingList status (optional - will be removed in future refactor)
-        await DailyQueue.findOneAndUpdate(
-            { doctorId, date: normalizedDate },
+                status: { $in: WAITING_STATUSES },
+            },
             {
                 $set: {
-                    'waitingList.$[elem].status': 'in_progress'
-                }
+                    status: 'in_consultation',
+                    consultationStartTime: new Date(),
+                    consultationEndTime: null,
+                    consultationDuration: null,
+                },
             },
             {
-                arrayFilters: [{ 'elem.appointmentId': nextAppointment._id }],
-                session
+                new: true,
+                sort: { tokenNumber: 1 },
+                ...withSession(session),
+            }
+        )
+    );
+
+    if (!nextAppointment) {
+        queue.status = 'closed';
+        return null;
+    }
+
+    queue.currentToken = nextAppointment.tokenNumber;
+    queue.status = 'active';
+
+    await recordQueueEvent({
+        appointmentId: nextAppointment._id,
+        doctorId,
+        patientId: nextAppointment.patientId?._id || nextAppointment.patientId,
+        queueId: queue._id,
+        event: 'in_consultation',
+        previousEvent: 'waiting',
+        metadata: {
+            tokenNumber: nextAppointment.tokenNumber,
+        },
+        session,
+    });
+
+    return nextAppointment;
+};
+
+const finalizeAppointment = async (appointment, doctorId, queue, finalStatus, session = null) => {
+    const previousStatus = ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)
+        ? 'in_consultation'
+        : appointment.status;
+
+    appointment.status = finalStatus;
+    appointment.consultationEndTime = new Date();
+
+    if (finalStatus === 'completed') {
+        const startTime = appointment.consultationStartTime || appointment.slotStart || new Date();
+        const duration = Math.max(
+            1,
+            Math.round((appointment.consultationEndTime.getTime() - new Date(startTime).getTime()) / 60000)
+        );
+
+        appointment.consultationStartTime = startTime;
+        appointment.consultationDuration = duration;
+
+        await ConsultationHistory.findOneAndUpdate(
+            { appointmentId: appointment._id },
+            {
+                appointmentId: appointment._id,
+                doctorId,
+                patientId: appointment.patientId,
+                startTime,
+                endTime: appointment.consultationEndTime,
+                consultationDuration: duration,
+            },
+            {
+                upsert: true,
+                new: true,
+                ...withSession(session),
             }
         );
 
-        await recordQueueEvent({
-            appointmentId: nextAppointment._id,
+        await cacheManager.delete(`estimate:consultTime:${doctorId}`);
+        const averageConsultationTime = await estimationService.getAverageConsultTime(doctorId);
+        await Doctor.findByIdAndUpdate(
             doctorId,
-            patientId: nextAppointment.patientId,
-            queueId: updatedQueue._id,
-            event: 'in_progress',
-            previousEvent: 'waiting',
-            metadata: {
-                tokenNumber: nextAppointment.tokenNumber,
-            },
-            session,
-        });
-
-        // CRITICAL: Count inside transaction for performance (not after commit)
-        const [waitingCount, completedCount] = await Promise.all([
-            Appointment.countDocuments({
-                doctorId, date: normalizedDate, status: 'waiting'
-            }).session(session),
-            Appointment.countDocuments({
-                doctorId, date: normalizedDate, status: 'completed'
-            }).session(session)
-        ]);
-
-        // Build response
-        const response = {
-            success: true,
-            currentToken: nextAppointment.tokenNumber,
-            appointment: {
-                _id: nextAppointment._id,
-                patientId: nextAppointment.patientId._id,
-                patientName: nextAppointment.patientId.name,
-                tokenNumber: nextAppointment.tokenNumber,
-                priority: nextAppointment.priority || 'standard', // Phase 5.2
-                priorityNote: nextAppointment.priorityNote || null
-            },
-            queueState: {
-                waiting: waitingCount,
-                completed: completedCount,
-                current: nextAppointment.tokenNumber
-            }
-        };
-
-        // CRITICAL: Store response for idempotency BEFORE commit
-        updatedQueue.lastCallNextResponse = response;
-        await updatedQueue.save({ session });
-
-        await session.commitTransaction();
-
-        // Emit to doctor room (all patients + doctor watching)
-        io.to(`doctor:${doctorId}:${date}`).emit('queue:token-called', {
-            doctorId,
-            date,
-            currentToken: nextAppointment.tokenNumber,
-            appointmentId: nextAppointment._id,
-            patientName: nextAppointment.patientId.name,
-            queueState: response.queueState,
-            timestamp: new Date()
-        });
-
-        // Emit to patient's personal room
-        io.to(`user:${nextAppointment.patientId._id}`).emit('appointment:status-changed', {
-            appointmentId: nextAppointment._id,
-            newStatus: 'in_progress',
-            doctorId,
-            date,
-            timestamp: new Date()
-        });
-
-        notificationService.sendTokenCalledNotification(nextAppointment, io).catch(() => {});
-
-        return response;
-
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
-    }
-};
-
-/**
- * Mark Completed - Mark current patient as completed and call next
- * CRITICAL: Non-recursive implementation to avoid nested transactions
- */
-const markCompleted = async (doctorId, date, io, req) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-        const normalizedDate = normalizeDate(new Date(date));
-
-        const queue = await DailyQueue.findOne({
-            doctorId,
-            date: normalizedDate
-        }).session(session);
-
-        if (!queue) throw new Error('Queue not found');
-
-        // Verify ownership
-        if (queue.doctorId.toString() !== doctorId.toString()) {
-            throw new Error('Unauthorized queue access');
-        }
-
-        // Idempotency check
-        const clientActionId = req.headers['x-action-id'];
-        if (!clientActionId) {
-            throw new Error('X-Action-ID header required');
-        }
-
-        if (queue.lastCompleteId === clientActionId) {
-            return queue.lastCompleteResponse || {
-                success: true,
-                message: 'Duplicate request - already completed'
-            };
-        }
-
-        // Find current in-progress appointment
-        const currentAppointment = await Appointment.findOne({
-            doctorId,
-            date: normalizedDate,
-            status: 'in_progress'
-        }).session(session);
-
-        if (!currentAppointment) {
-            throw new Error('No patient currently being served');
-        }
-
-                // Mark as completed
-        currentAppointment.status = 'completed';
-        currentAppointment.consultationEndTime = new Date();
-        if (currentAppointment.consultationStartTime) {
-            currentAppointment.consultationDuration = Math.max(1, Math.round((currentAppointment.consultationEndTime - currentAppointment.consultationStartTime) / 60000));
-        } else {
-            currentAppointment.consultationDuration = 15;
-        }
-        await currentAppointment.save({ session });
-
-        // Update dotor's average consult time
-        const Doctor = require('../models/Doctor');
-        const doctorDoc = await Doctor.findById(doctorId).session(session);
-        if (doctorDoc) {
-            doctorDoc.averageConsultTime = Math.round(((doctorDoc.averageConsultTime || doctorDoc.defaultConsultTime) * 9 + currentAppointment.consultationDuration) / 10);
-            await doctorDoc.save({ session });
-        }
-
-        // Update waitingList
-        await DailyQueue.findOneAndUpdate(
-            { doctorId, date: normalizedDate },
-            { $set: { 'waitingList.$[elem].status': 'completed' } },
-            { arrayFilters: [{ 'elem.appointmentId': currentAppointment._id }], session }
+            { $set: { averageConsultTime: averageConsultationTime } },
+            withSession(session)
         );
-
-        await recordQueueEvent({
-            appointmentId: currentAppointment._id,
-            doctorId,
-            patientId: currentAppointment.patientId,
-            queueId: queue._id,
-            event: 'completed',
-            previousEvent: 'in_progress',
-            metadata: {
-                tokenNumber: currentAppointment.tokenNumber,
-            },
-            session,
-        });
-
-        // Directly call next patient (in same transaction - not recursive)
-        // Phase 5.2: Priority-aware ordering
-        const nextAppointment = await Appointment.findOneAndUpdate(
-            { doctorId, date: normalizedDate, status: 'waiting' },
-            { $set: { status: 'in_progress', consultationStartTime: new Date() } },
-            { sort: { priority: 1, tokenNumber: 1 }, session, new: true }
-        ).populate('patientId', 'name email');
-
-        if (nextAppointment) {
-            queue.currentToken = nextAppointment.tokenNumber;
-
-            // Update waitingList for next patient
-            await DailyQueue.findOneAndUpdate(
-                { doctorId, date: normalizedDate },
-                { $set: { 'waitingList.$[elem].status': 'in_progress' } },
-                { arrayFilters: [{ 'elem.appointmentId': nextAppointment._id }], session }
-            );
-
-            await recordQueueEvent({
-                appointmentId: nextAppointment._id,
-                doctorId,
-                patientId: nextAppointment.patientId,
-                queueId: queue._id,
-                event: 'in_progress',
-                previousEvent: 'waiting',
-                metadata: {
-                    tokenNumber: nextAppointment.tokenNumber,
-                },
-                session,
-            });
-        } else {
-            // No more patients - auto-close
-            queue.status = 'closed';
-        }
-
-        // Build response
-        const response = {
-            success: true,
-            completedToken: currentAppointment.tokenNumber,
-            nextToken: nextAppointment?.tokenNumber || null,
-            queueClosed: !nextAppointment
-        };
-
-        // CRITICAL: Store idempotency data BEFORE commit
-        queue.lastCompleteId = clientActionId;
-        queue.lastCompleteResponse = response;
-        await queue.save({ session });
-
-        await session.commitTransaction();
-
-        // Emit events
-        io.to(`user:${currentAppointment.patientId}`).emit('appointment:status-changed', {
-            appointmentId: currentAppointment._id,
-            newStatus: 'completed',
-            timestamp: new Date()
-        });
-
-        if (nextAppointment) {
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:token-called', {
-                currentToken: nextAppointment.tokenNumber,
-                patientName: nextAppointment.patientId.name,
-                timestamp: new Date()
-            });
-
-            io.to(`user:${nextAppointment.patientId._id}`).emit('appointment:status-changed', {
-                appointmentId: nextAppointment._id,
-                newStatus: 'in_progress',
-                timestamp: new Date()
-            });
-
-            notificationService.sendTokenCalledNotification(nextAppointment, io).catch(() => {});
-        } else {
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:closed', {
-                reason: 'all_completed',
-                timestamp: new Date()
-            });
-        }
-
-        return response;
-
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
     }
+
+    await appointment.save(withSession(session));
+
+    await recordQueueEvent({
+        appointmentId: appointment._id,
+        doctorId,
+        patientId: appointment.patientId,
+        queueId: queue._id,
+        event: finalStatus,
+        previousEvent: previousStatus,
+        metadata: {
+            tokenNumber: appointment.tokenNumber,
+            consultationDuration: appointment.consultationDuration || undefined,
+        },
+        session,
+    });
 };
 
-/**
- * Mark No Show - Mark current patient as no-show and call next
- * CRITICAL: Non-recursive implementation, does NOT decrement counts
- */
-const markNoShow = async (doctorId, date, io, req) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+const callNextPatient = async (doctorId, date, io, req) => {
+    const normalizedDate = normalizeDate(date);
+    const actionId = req?.headers?.['x-action-id'];
 
-    try {
-        const normalizedDate = normalizeDate(new Date(date));
-
-        const queue = await DailyQueue.findOne({
-            doctorId,
-            date: normalizedDate
-        }).session(session);
-
-        if (!queue) throw new Error('Queue not found');
-
-        // Verify ownership
-        if (queue.doctorId.toString() !== doctorId.toString()) {
-            throw new Error('Unauthorized queue access');
-        }
-
-        // Idempotency check
-        const clientActionId = req.headers['x-action-id'];
-        if (!clientActionId) {
-            throw new Error('X-Action-ID header required');
-        }
-
-        if (queue.lastNoShowId === clientActionId) {
-            return queue.lastNoShowResponse || {
-                success: true,
-                message: 'Duplicate request - already marked no-show'
-            };
-        }
-
-        // Find current in-progress appointment
-        const currentAppointment = await Appointment.findOne({
-            doctorId,
-            date: normalizedDate,
-            status: 'in_progress'
-        }).session(session);
-
-        if (!currentAppointment) {
-            throw new Error('No patient currently being served');
-        }
-
-        // Mark as no_show (do NOT decrement appointmentCount)
-        currentAppointment.status = 'no_show';
-        await currentAppointment.save({ session });
-
-        // Update waitingList
-        await DailyQueue.findOneAndUpdate(
-            { doctorId, date: normalizedDate },
-            { $set: { 'waitingList.$[elem].status': 'no_show' } },
-            { arrayFilters: [{ 'elem.appointmentId': currentAppointment._id }], session }
-        );
-
-        await recordQueueEvent({
-            appointmentId: currentAppointment._id,
-            doctorId,
-            patientId: currentAppointment.patientId,
-            queueId: queue._id,
-            event: 'no_show',
-            previousEvent: 'in_progress',
-            metadata: {
-                tokenNumber: currentAppointment.tokenNumber,
-            },
-            session,
-        });
-
-        // Directly call next patient (in same transaction - not recursive)
-        // Phase 5.2: Priority-aware ordering
-        const nextAppointment = await Appointment.findOneAndUpdate(
-            { doctorId, date: normalizedDate, status: 'waiting' },
-            { $set: { status: 'in_progress', consultationStartTime: new Date() } },
-            { sort: { priority: 1, tokenNumber: 1 }, session, new: true }
-        ).populate('patientId', 'name email');
-
-        if (nextAppointment) {
-            queue.currentToken = nextAppointment.tokenNumber;
-
-            // Update waitingList for next patient
-            await DailyQueue.findOneAndUpdate(
-                { doctorId, date: normalizedDate },
-                { $set: { 'waitingList.$[elem].status': 'in_progress' } },
-                { arrayFilters: [{ 'elem.appointmentId': nextAppointment._id }], session }
-            );
-
-            await recordQueueEvent({
-                appointmentId: nextAppointment._id,
-                doctorId,
-                patientId: nextAppointment.patientId,
-                queueId: queue._id,
-                event: 'in_progress',
-                previousEvent: 'waiting',
-                metadata: {
-                    tokenNumber: nextAppointment.tokenNumber,
-                },
-                session,
-            });
-        } else {
-            // No more patients - auto-close
-            queue.status = 'closed';
-        }
-
-        // Build response
-        const response = {
-            success: true,
-            noShowToken: currentAppointment.tokenNumber,
-            nextToken: nextAppointment?.tokenNumber || null,
-            queueClosed: !nextAppointment
-        };
-
-        // CRITICAL: Store idempotency data BEFORE commit
-        queue.lastNoShowId = clientActionId;
-        queue.lastNoShowResponse = response;
-        await queue.save({ session });
-
-        await session.commitTransaction();
-
-        // Emit events
-        io.to(`user:${currentAppointment.patientId}`).emit('appointment:status-changed', {
-            appointmentId: currentAppointment._id,
-            newStatus: 'no_show',
-            timestamp: new Date()
-        });
-
-        if (nextAppointment) {
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:token-called', {
-                currentToken: nextAppointment.tokenNumber,
-                patientName: nextAppointment.patientId.name,
-                timestamp: new Date()
-            });
-
-            io.to(`user:${nextAppointment.patientId._id}`).emit('appointment:status-changed', {
-                appointmentId: nextAppointment._id,
-                newStatus: 'in_progress',
-                timestamp: new Date()
-            });
-
-            notificationService.sendTokenCalledNotification(nextAppointment, io).catch(() => {});
-        } else {
-            io.to(`doctor:${doctorId}:${date}`).emit('queue:closed', {
-                reason: 'all_completed',
-                timestamp: new Date()
-            });
-        }
-
-        return response;
-
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
-    }
-};
-
-/**
- * Pause Queue - Temporarily pause queue (break time)
- */
-const pauseQueue = async (doctorId, date, io) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-        const normalizedDate = normalizeDate(new Date(date));
-
-        const queue = await DailyQueue.findOne({
-            doctorId,
-            date: normalizedDate
-        }).session(session);
-
-        if (!queue) throw new Error('Queue not found');
-
-        // Verify ownership
-        if (queue.doctorId.toString() !== doctorId.toString()) {
-            throw new Error('Unauthorized queue access');
-        }
+    const result = await withOptionalTransaction(async ({ session }) => {
+        const queue = await createQueueIfMissing(doctorId, normalizedDate, session);
 
         if (queue.status === 'paused') {
-            return { success: true, message: 'Queue is already paused' };
+            throw new Error('Queue is paused. Resume it before calling the next patient.');
         }
+
+        if (actionId && queue.lastCallNextId === actionId && queue.lastCallNextResponse) {
+            return queue.lastCallNextResponse;
+        }
+
+        const currentAppointment = await Appointment.findOne({
+            doctorId,
+            date: normalizedDate,
+            status: { $in: ACTIVE_CONSULTATION_STATUSES },
+        }, null, withSession(session));
+
+        if (currentAppointment) {
+            throw new Error('A patient is already in consultation');
+        }
+
+        const nextAppointment = await promoteNextWaitingAppointment(doctorId, normalizedDate, queue, session);
+
+        let response;
+        if (!nextAppointment) {
+            response = {
+                success: true,
+                queueClosed: true,
+                message: 'No patients waiting in the queue',
+                currentToken: queue.currentToken ?? null,
+            };
+        } else {
+            response = {
+                success: true,
+                currentToken: nextAppointment.tokenNumber,
+                appointment: {
+                    _id: nextAppointment._id,
+                    patientId: nextAppointment.patientId?._id || nextAppointment.patientId,
+                    patientName: nextAppointment.patientId?.name || 'Patient',
+                    tokenNumber: nextAppointment.tokenNumber,
+                    priority: nextAppointment.priority || 'standard',
+                    priorityNote: nextAppointment.priorityNote || '',
+                },
+            };
+        }
+
+        if (actionId) {
+            await updateIdempotency(queue, {
+                lastCallNextId: actionId,
+                lastCallNextResponse: response,
+            }, session);
+        } else {
+            await queue.save(withSession(session));
+        }
+
+        return {
+            ...response,
+            __postCommit: {
+                nextAppointmentId: nextAppointment?._id || null,
+                nextPatientId: nextAppointment?.patientId?._id || nextAppointment?.patientId || null,
+            },
+        };
+    });
+
+    await emitQueueUpdated(doctorId, normalizedDate, io);
+
+    if (result.__postCommit?.nextAppointmentId && result.__postCommit?.nextPatientId) {
+        io?.to(`user:${result.__postCommit.nextPatientId}`).emit('appointment:status-changed', {
+            appointmentId: result.__postCommit.nextAppointmentId,
+            newStatus: 'in_consultation',
+            doctorId,
+            date: normalizedDate,
+            timestamp: new Date(),
+        });
+
+        const nextAppointment = await Appointment.findById(result.__postCommit.nextAppointmentId)
+            .populate('patientId', 'name email');
+        if (nextAppointment) {
+            notificationService.sendTokenCalledNotification(nextAppointment, io).catch(() => {});
+        }
+    }
+
+    const { __postCommit, ...response } = result;
+    return response;
+};
+
+const transitionCurrentAppointment = async (doctorId, date, io, req, finalStatus) => {
+    const normalizedDate = normalizeDate(date);
+    const actionId = req?.headers?.['x-action-id'];
+    const idField = finalStatus === 'completed' ? 'lastCompleteId' : 'lastNoShowId';
+    const responseField = finalStatus === 'completed' ? 'lastCompleteResponse' : 'lastNoShowResponse';
+
+    const result = await withOptionalTransaction(async ({ session }) => {
+        const queue = await createQueueIfMissing(doctorId, normalizedDate, session);
+
+        if (actionId && queue[idField] === actionId && queue[responseField]) {
+            return queue[responseField];
+        }
+
+        const currentAppointment = await Appointment.findOne({
+            doctorId,
+            date: normalizedDate,
+            status: { $in: ACTIVE_CONSULTATION_STATUSES },
+        }, null, withSession(session));
+
+        if (!currentAppointment) {
+            throw new Error('No patient is currently in consultation');
+        }
+
+        await finalizeAppointment(currentAppointment, doctorId, queue, finalStatus, session);
+        const nextAppointment = await promoteNextWaitingAppointment(doctorId, normalizedDate, queue, session);
+
+        const response = {
+            success: true,
+            [finalStatus === 'completed' ? 'completedToken' : 'noShowToken']: currentAppointment.tokenNumber,
+            nextToken: nextAppointment?.tokenNumber || null,
+            queueClosed: !nextAppointment,
+        };
+
+        if (actionId) {
+            await updateIdempotency(queue, {
+                [idField]: actionId,
+                [responseField]: response,
+            }, session);
+        } else {
+            await queue.save(withSession(session));
+        }
+
+        return {
+            ...response,
+            __postCommit: {
+                finishedAppointmentId: currentAppointment._id,
+                finishedPatientId: currentAppointment.patientId,
+                nextAppointmentId: nextAppointment?._id || null,
+                nextPatientId: nextAppointment?.patientId?._id || nextAppointment?.patientId || null,
+            },
+        };
+    });
+
+    await emitQueueUpdated(doctorId, normalizedDate, io);
+
+    io?.to(`user:${result.__postCommit.finishedPatientId}`).emit('appointment:status-changed', {
+        appointmentId: result.__postCommit.finishedAppointmentId,
+        newStatus: finalStatus,
+        doctorId,
+        date: normalizedDate,
+        timestamp: new Date(),
+    });
+
+    if (result.__postCommit.nextAppointmentId && result.__postCommit.nextPatientId) {
+        io?.to(`user:${result.__postCommit.nextPatientId}`).emit('appointment:status-changed', {
+            appointmentId: result.__postCommit.nextAppointmentId,
+            newStatus: 'in_consultation',
+            doctorId,
+            date: normalizedDate,
+            timestamp: new Date(),
+        });
+
+        const nextAppointment = await Appointment.findById(result.__postCommit.nextAppointmentId)
+            .populate('patientId', 'name email');
+        if (nextAppointment) {
+            notificationService.sendTokenCalledNotification(nextAppointment, io).catch(() => {});
+        }
+    }
+
+    const { __postCommit, ...response } = result;
+    return response;
+};
+
+const markCompleted = async (doctorId, date, io, req) => transitionCurrentAppointment(
+    doctorId,
+    date,
+    io,
+    req,
+    'completed'
+);
+
+const markNoShow = async (doctorId, date, io, req) => transitionCurrentAppointment(
+    doctorId,
+    date,
+    io,
+    req,
+    'no_show'
+);
+
+const pauseQueue = async (doctorId, date, io) => {
+    const normalizedDate = normalizeDate(date);
+
+    await withOptionalTransaction(async ({ session }) => {
+        const queue = await createQueueIfMissing(doctorId, normalizedDate, session);
 
         if (queue.status === 'closed') {
             throw new Error('Cannot pause a closed queue');
         }
 
         queue.status = 'paused';
-        await queue.save({ session });
+        await queue.save(withSession(session));
+    });
 
-        await session.commitTransaction();
+    await emitQueueUpdated(doctorId, normalizedDate, io);
+    io?.to(`doctor:${doctorId}:${toRoomDate(normalizedDate)}`).emit('queue:paused', {
+        doctorId,
+        date: normalizedDate,
+        status: 'paused',
+        timestamp: new Date(),
+    });
 
-        // Broadcast pause event
-        io.to(`doctor:${doctorId}:${date}`).emit('queue:paused', {
-            doctorId,
-            date,
-            timestamp: new Date()
-        });
-
-        return { success: true, message: 'Queue paused successfully' };
-
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
-    }
+    return { success: true, message: 'Queue paused successfully' };
 };
 
-/**
- * Resume Queue - Resume paused queue
- */
 const resumeQueue = async (doctorId, date, io) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    const normalizedDate = normalizeDate(date);
 
-    try {
-        const normalizedDate = normalizeDate(new Date(date));
-
-        const queue = await DailyQueue.findOne({
-            doctorId,
-            date: normalizedDate
-        }).session(session);
-
-        if (!queue) throw new Error('Queue not found');
-
-        // Verify ownership
-        if (queue.doctorId.toString() !== doctorId.toString()) {
-            throw new Error('Unauthorized queue access');
-        }
-
-        if (queue.status === 'active') {
-            return { success: true, message: 'Queue is already active' };
-        }
+    await withOptionalTransaction(async ({ session }) => {
+        const queue = await createQueueIfMissing(doctorId, normalizedDate, session);
 
         if (queue.status === 'closed') {
-            throw new Error('Cannot resume a closed queue');
+            queue.status = 'active';
+        } else {
+            queue.status = 'active';
         }
 
-        queue.status = 'active';
-        await queue.save({ session });
+        await queue.save(withSession(session));
+    });
 
-        await session.commitTransaction();
+    await emitQueueUpdated(doctorId, normalizedDate, io);
+    io?.to(`doctor:${doctorId}:${toRoomDate(normalizedDate)}`).emit('queue:resumed', {
+        doctorId,
+        date: normalizedDate,
+        status: 'active',
+        timestamp: new Date(),
+    });
 
-        // Broadcast resume event
-        io.to(`doctor:${doctorId}:${date}`).emit('queue:resumed', {
-            doctorId,
-            date,
-            timestamp: new Date()
-        });
-
-        return { success: true, message: 'Queue resumed successfully' };
-
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
-    }
+    return { success: true, message: 'Queue resumed successfully' };
 };
 
-/**
- * Get Queue State - Fetch current queue state for doctor
- */
-const getQueueState = async (doctorId, date) => {
-    const normalizedDate = normalizeDate(new Date(date));
-
-    let queue = await DailyQueue.findOne({ doctorId, date: normalizedDate });
-
-    // Auto-create queue if no queue exists for this date
-    if (!queue) {
-        const apptCount = await Appointment.countDocuments({ doctorId, date: normalizedDate });
-        queue = await DailyQueue.create({
-            doctorId,
-            date: normalizedDate,
-            status: 'active',
-            appointmentCount: apptCount,
-            lastTokenNumber: apptCount,
-            currentToken: null,
-        });
-    }
-
-    const [waiting, inProgress, completed, noShow, booked] = await Promise.all([
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'waiting' }),
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'in_progress' }),
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'completed' }),
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'no_show' }),
-        Appointment.countDocuments({ doctorId, date: normalizedDate, status: 'booked' }),
-    ]);
-
-    const waitingList = await Appointment.find({
-        doctorId,
-        date: normalizedDate,
-        status: { $in: ['waiting', 'booked'] }
-    }).sort({ priority: 1, tokenNumber: 1 })
-      .select('tokenNumber patientId priority')
-      .populate('patientId', 'name email');
-
-    const currentPatient = await Appointment.findOne({
-        doctorId,
-        date: normalizedDate,
-        status: 'in_progress'
-    }).select('tokenNumber patientId').populate('patientId', 'name email');
-
-    return {
-        doctorId,
-        date: normalizedDate,
-        status: queue.status,
-        currentToken: queue.currentToken,
-        currentPatient: currentPatient ? {
-            tokenNumber: currentPatient.tokenNumber,
-            patientName: currentPatient.patientId?.name || 'Patient'
-        } : null,
-        counts: {
-            waiting: waiting + booked,
-            inProgress,
-            completed,
-            noShow,
-            total: queue.appointmentCount
-        },
-        waitingList: waitingList.map(apt => ({
-            tokenNumber: apt.tokenNumber,
-            patientName: apt.patientId?.name || 'Patient',
-            priority: apt.priority || 'standard',
-        }))
-    };
-};
+const getQueueState = async (doctorId, date) => buildQueueStateInternal(doctorId, date);
 
 module.exports = {
+    WAITING_STATUSES,
+    ACTIVE_CONSULTATION_STATUSES,
+    CLOSED_APPOINTMENT_STATUSES,
+    createQueueIfMissing,
+    recordQueueEvent,
+    emitQueueUpdated,
+    getQueueState,
     callNextPatient,
     markCompleted,
     markNoShow,
     pauseQueue,
     resumeQueue,
-    getQueueState
 };

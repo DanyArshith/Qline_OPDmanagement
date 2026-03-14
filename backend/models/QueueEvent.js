@@ -28,12 +28,12 @@ const queueEventSchema = new mongoose.Schema({
     },
     event: {
         type: String,
-        enum: ['created', 'waiting', 'called', 'in_progress', 'completed', 'cancelled', 'no_show'],
+        enum: ['created', 'waiting', 'called', 'in_progress', 'in_consultation', 'completed', 'cancelled', 'no_show', 'rescheduled'],
         required: true
     },
     previousEvent: {
         type: String,
-        enum: ['created', 'waiting', 'called', 'in_progress', 'completed', 'cancelled', 'no_show']
+        enum: ['created', 'waiting', 'called', 'in_progress', 'in_consultation', 'completed', 'cancelled', 'no_show', 'rescheduled']
     },
     timestamp: {
         type: Date,

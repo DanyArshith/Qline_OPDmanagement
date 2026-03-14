@@ -16,7 +16,7 @@ import { AppointmentRowSkeleton } from '@/components/ui/Skeleton'
 import { EmptyState, ErrorState } from '@/components/ui/AsyncState'
 
 const SKELETONS = Array.from({ length: 5 })
-const TRACKABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
+const TRACKABLE_STATUSES = new Set(['booked', 'waiting', 'in_consultation', 'in_progress'])
 const CANCELABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
 
 export default function AppointmentsPage() {
@@ -151,4 +151,3 @@ export default function AppointmentsPage() {
         </div>
     )
 }
-

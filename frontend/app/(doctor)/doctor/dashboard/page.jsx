@@ -228,7 +228,9 @@ export default function DoctorDashboardPage() {
                 waitingCount: queue?.waitingCount ?? queue?.counts?.waiting ?? 0,
             })
             setCurrentAppt(
-                (Array.isArray(appointmentList) ? appointmentList : []).find((appointment) => appointment.status === 'in_progress') ||
+                queue?.currentPatient ||
+                queue?.currentAppointment ||
+                (Array.isArray(appointmentList) ? appointmentList : []).find((appointment) => ['in_consultation', 'in_progress'].includes(appointment.status)) ||
                 queue?.currentAppointment ||
                 null
             )
@@ -257,7 +259,12 @@ export default function DoctorDashboardPage() {
             waitingCount: data?.waitingCount ?? data?.counts?.waiting ?? prev?.waitingCount ?? 0,
         }))
         const socketAppointments = Array.isArray(data.appointments) ? data.appointments : []
-        setCurrentAppt(socketAppointments.find((appointment) => appointment.status === 'in_progress') || data.currentAppointment || null)
+        setCurrentAppt(
+            data.currentPatient ||
+            data.currentAppointment ||
+            socketAppointments.find((appointment) => ['in_consultation', 'in_progress'].includes(appointment.status)) ||
+            null
+        )
         if (data.appointments) setAppointments(data.appointments)
     })
     useSocketEvent('queue:update', (data) => {
@@ -267,7 +274,12 @@ export default function DoctorDashboardPage() {
             waitingCount: data?.waitingCount ?? data?.counts?.waiting ?? prev?.waitingCount ?? 0,
         }))
         const socketAppointments = Array.isArray(data.appointments) ? data.appointments : []
-        setCurrentAppt(socketAppointments.find((appointment) => appointment.status === 'in_progress') || data.currentAppointment || null)
+        setCurrentAppt(
+            data.currentPatient ||
+            data.currentAppointment ||
+            socketAppointments.find((appointment) => ['in_consultation', 'in_progress'].includes(appointment.status)) ||
+            null
+        )
         if (data.appointments) setAppointments(data.appointments)
     })
     useSocketEvent('queue:token-called', () => { load() })
@@ -450,12 +462,15 @@ export default function DoctorDashboardPage() {
                 <div>
                     <QueueControlPanel
                         currentAppointment={currentAppt}
+                        nextAppointment={queueState?.nextPatient}
+                        queueList={queueState?.queueList || []}
                         queueState={queueState}
                         onCallNext={onCallNext}
                         onComplete={onComplete}
                         onNoShow={onNoShow}
                         onPause={onPause}
                         onResume={onResume}
+                        medicalRecordHref={currentAppt ? `/doctor/medical-records/new?appointmentId=${currentAppt._id}` : undefined}
                         loading={actionLoading}
                     />
                 </div>

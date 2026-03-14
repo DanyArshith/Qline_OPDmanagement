@@ -181,7 +181,7 @@ exports.getDashboardStats = async (doctorId) => {
                 total: appointments.length,
                 completed: appointments.filter(a => a.status === 'completed').length,
                 waiting: appointments.filter(a => a.status === 'waiting').length,
-                in_progress: appointments.filter(a => a.status === 'in_progress').length,
+                in_progress: appointments.filter(a => ['in_progress', 'in_consultation'].includes(a.status)).length,
                 cancelled: appointments.filter(a => a.status === 'cancelled').length,
                 no_show: appointments.filter(a => a.status === 'no_show').length
             },

@@ -5,6 +5,7 @@ const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const asyncHandler = require('../utils/asyncHandler');
 const notificationService = require('../services/notificationService');
+const { syncDoctorSchedule } = require('../services/doctorScheduleService');
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || 'qline_rt';
 
@@ -109,12 +110,13 @@ const register = asyncHandler(async (req, res) => {
 
     if (role === 'doctor') {
         const Doctor = require('../models/Doctor');
-        await Doctor.create({
+        const doctor = await Doctor.create({
             userId: user._id,
             department: 'Pending...',
             workingHours: { start: '09:00', end: '17:00' },
             isConfigured: false,
         });
+        await syncDoctorSchedule(doctor);
     }
 
     // Generate tokens

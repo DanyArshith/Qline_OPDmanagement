@@ -3,10 +3,145 @@ const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const DailyQueue = require('../models/DailyQueue');
 const QueueEvent = require('../models/QueueEvent');
+const ConsultationHistory = require('../models/ConsultationHistory');
 const asyncHandler = require('../utils/asyncHandler');
 const { normalizeDate, isInPast, getSlotDuration } = require('../utils/dateUtils');
 const notificationService = require('../services/notificationService');
-const { checkSlotAvailability } = require('../services/slotService');
+const { checkSlotAvailability, findNextAvailableSlot } = require('../services/slotService');
+const queueService = require('../services/queueService');
+const { autoCarryForwardPastAppointmentsForDoctor } = require('../services/appointmentCarryForwardService');
+const { withOptionalTransaction } = require('../utils/transactionManager');
+
+const WAITING_STATUSES = ['waiting', 'booked'];
+const ACTIVE_CONSULTATION_STATUSES = ['in_consultation', 'in_progress'];
+const REBOOKABLE_STATUSES = ['waiting', 'booked', 'in_consultation', 'in_progress'];
+const withSession = (session) => (session ? { session } : {});
+
+const emitQueueUpdates = async (doctorId, dates, io) => {
+    const uniqueDates = [...new Set(dates.map((date) => normalizeDate(date).toISOString()))];
+    await Promise.all(
+        uniqueDates.map((dateValue) => (
+            queueService.emitQueueUpdated(doctorId, new Date(dateValue), io)
+        ))
+    );
+};
+
+const loadAuthorizedAppointmentForUser = async (appointmentId, userId, session = null) => {
+    const appointment = await Appointment.findById(appointmentId, null, withSession(session));
+    if (!appointment) {
+        throw new Error('Appointment not found');
+    }
+
+    const doctor = await Doctor.findById(appointment.doctorId, null, withSession(session));
+    const isPatient = appointment.patientId.toString() === userId;
+    const isDoctor = doctor && doctor.userId.toString() === userId;
+
+    if (!isPatient && !isDoctor) {
+        throw new Error('Unauthorized to access this appointment');
+    }
+
+    return { appointment, doctor, isPatient, isDoctor };
+};
+
+const moveAppointmentToSlot = async ({
+    appointment,
+    doctor,
+    newDate,
+    slotStartDate,
+    slotEndDate,
+    session = null,
+    queueEvent = 'rescheduled',
+}) => {
+    const previousDate = normalizeDate(appointment.date);
+    const previousSlotStart = new Date(appointment.slotStart);
+
+    const oldQueue = await queueService.createQueueIfMissing(appointment.doctorId, appointment.date, session);
+    const newQueue = await queueService.createQueueIfMissing(appointment.doctorId, newDate, session);
+    const sameQueue = oldQueue._id.toString() === newQueue._id.toString();
+    const nextTokenNumber = (newQueue.lastTokenNumber || 0) + 1;
+
+    const previousEvent = appointment.status === 'booked' ? 'waiting' : appointment.status;
+    appointment.date = newDate;
+    appointment.slotStart = slotStartDate;
+    appointment.slotEnd = slotEndDate;
+    appointment.tokenNumber = nextTokenNumber;
+    appointment.status = 'waiting';
+    appointment.consultationStartTime = undefined;
+    appointment.consultationEndTime = undefined;
+    appointment.consultationDuration = undefined;
+    await appointment.save(withSession(session));
+
+    if (sameQueue) {
+        await DailyQueue.findByIdAndUpdate(
+            newQueue._id,
+            {
+                $pull: { waitingList: { appointmentId: appointment._id } },
+            },
+            withSession(session)
+        );
+        await DailyQueue.findByIdAndUpdate(
+            newQueue._id,
+            {
+                $inc: { lastTokenNumber: 1 },
+                $set: { status: 'active' },
+                $push: {
+                    waitingList: {
+                        appointmentId: appointment._id,
+                        tokenNumber: appointment.tokenNumber,
+                        status: 'waiting',
+                    },
+                },
+            },
+            withSession(session)
+        );
+    } else {
+        await DailyQueue.findByIdAndUpdate(
+            oldQueue._id,
+            {
+                $inc: { appointmentCount: -1 },
+                $pull: { waitingList: { appointmentId: appointment._id } },
+            },
+            withSession(session)
+        );
+
+        await DailyQueue.findByIdAndUpdate(
+            newQueue._id,
+            {
+                $inc: { appointmentCount: 1, lastTokenNumber: 1 },
+                $set: { status: 'active' },
+                $push: {
+                    waitingList: {
+                        appointmentId: appointment._id,
+                        tokenNumber: appointment.tokenNumber,
+                        status: 'waiting',
+                    },
+                },
+            },
+            withSession(session)
+        );
+    }
+
+    await QueueEvent.create([{
+        appointmentId: appointment._id,
+        doctorId: appointment.doctorId,
+        patientId: appointment.patientId,
+        queueId: newQueue._id,
+        event: queueEvent,
+        previousEvent,
+        timestamp: new Date(),
+        metadata: {
+            tokenNumber: appointment.tokenNumber,
+        },
+    }], withSession(session));
+
+    return {
+        appointment,
+        previousDate,
+        previousSlotStart,
+        nextDate: newDate,
+        doctor,
+    };
+};
 
 /**
  * @desc    Book an appointment slot (Transaction-safe with conditional atomic increment)
@@ -72,94 +207,85 @@ const bookAppointment = asyncHandler(async (req, res) => {
     }
 
     // 8. Atomic increment queue count (upsert creates queue if not exists)
-    const queue = await DailyQueue.findOneAndUpdate(
-        {
-            doctorId,
-            date: normalizedDate,
-            appointmentCount: { $lt: doctor.maxPatientsPerDay },
-        },
-        { $inc: { appointmentCount: 1, lastTokenNumber: 1 } },
-        { new: true, upsert: true }
-    );
+    const bookingResult = await withOptionalTransaction(async ({ session }) => {
+        const queue = await queueService.createQueueIfMissing(doctorId, normalizedDate, session);
 
-    if (!queue) {
-        res.status(400);
-        throw new Error('Doctor has reached maximum appointments for this day');
-    }
+        if ((queue.appointmentCount || 0) >= doctor.maxPatientsPerDay) {
+            res.status(400);
+            throw new Error('Doctor has reached maximum appointments for this day');
+        }
 
-    const tokenNumber = queue.lastTokenNumber;
+        queue.appointmentCount = (queue.appointmentCount || 0) + 1;
+        queue.lastTokenNumber = (queue.lastTokenNumber || 0) + 1;
+        const tokenNumber = queue.lastTokenNumber;
 
-    // 9. Create the appointment
-    let createdAppointment;
-    try {
-        createdAppointment = await Appointment.create({
-            doctorId,
-            patientId,
-            date: normalizedDate,
-            slotStart: slotStartDate,
-            slotEnd: slotEndDate,
+        let createdAppointment;
+        try {
+            createdAppointment = await Appointment.create([{
+                doctorId,
+                patientId,
+                date: normalizedDate,
+                slotStart: slotStartDate,
+                slotEnd: slotEndDate,
+                tokenNumber,
+                status: 'waiting',
+            }], withSession(session));
+        } catch (err) {
+            if (err.code === 11000) {
+                res.status(409);
+                throw new Error('This slot is no longer available');
+            }
+            throw err;
+        }
+
+        const appointment = createdAppointment[0];
+        queue.waitingList.push({
+            appointmentId: appointment._id,
             tokenNumber,
             status: 'waiting',
         });
-    } catch (err) {
-        // Roll back the queue increment on failure
-        await DailyQueue.findOneAndUpdate(
-            { doctorId, date: normalizedDate },
-            { $inc: { appointmentCount: -1, lastTokenNumber: -1 } }
-        );
-        if (err.code === 11000) {
-            res.status(409);
-            throw new Error('This slot is no longer available');
-        }
-        throw err;
-    }
+        queue.status = 'active';
+        await queue.save(withSession(session));
 
-    // 10. Add to queue waiting list
-    await DailyQueue.findOneAndUpdate(
-        { doctorId, date: normalizedDate },
-        {
-            $push: {
-                waitingList: {
-                    appointmentId: createdAppointment._id,
-                    tokenNumber,
-                    status: 'waiting',
-                },
+        await QueueEvent.create([
+            {
+                appointmentId: appointment._id,
+                doctorId,
+                patientId,
+                queueId: queue._id,
+                event: 'created',
+                timestamp: new Date(),
+                metadata: { tokenNumber, estimatedWaitTime: 0 },
             },
-        }
-    );
+            {
+                appointmentId: appointment._id,
+                doctorId,
+                patientId,
+                queueId: queue._id,
+                event: 'waiting',
+                previousEvent: 'created',
+                timestamp: new Date(),
+                metadata: { tokenNumber, position: queue.appointmentCount },
+            },
+        ], withSession(session));
 
-    // 11. Log queue events (best-effort)
-    QueueEvent.create([
-        {
-            appointmentId: createdAppointment._id,
-            doctorId,
-            patientId,
-            queueId: queue._id,
-            event: 'created',
-            timestamp: new Date(),
-            metadata: { tokenNumber, estimatedWaitTime: 0 }
-        },
-        {
-            appointmentId: createdAppointment._id,
-            doctorId,
-            patientId,
-            queueId: queue._id,
-            event: 'waiting',
-            previousEvent: 'created',
-            timestamp: new Date(),
-            metadata: { tokenNumber, position: queue.appointmentCount }
-        }
-    ]).catch(() => {});
+        return {
+            appointment,
+            tokenNumber,
+        };
+    });
 
     // Notifications (best-effort)
     notificationService
-        .sendAppointmentBookedNotification(createdAppointment, req.app.get('io'))
+        .sendAppointmentBookedNotification(bookingResult.appointment, req.app.get('io'))
         .catch(() => {});
+
+    await queueService.emitQueueUpdated(doctorId, normalizedDate, req.app.get('io'));
 
     res.status(201).json({
         success: true,
-        appointment: createdAppointment,
-        message: `Appointment booked successfully. Token number: ${tokenNumber}`,
+        appointment: bookingResult.appointment,
+        message: `Appointment booked successfully. Token number: ${bookingResult.tokenNumber}`,
     });
 });
 
@@ -206,7 +332,7 @@ const getMyAppointments = asyncHandler(async (req, res) => {
  * @access  Private (Doctor only)
  */
 const getDoctorAppointments = asyncHandler(async (req, res) => {
-    const { date } = req.query;
+    const { date, status, page = 1, limit = 100 } = req.query;
 
     if (!date) {
         res.status(400);
@@ -220,20 +346,42 @@ const getDoctorAppointments = asyncHandler(async (req, res) => {
         throw new Error('Doctor profile not found');
     }
 
+    await autoCarryForwardPastAppointmentsForDoctor({
+        doctor,
+        io: req.app.get('io'),
+    });
+
     const normalizedDate = normalizeDate(new Date(date));
 
-    const appointments = await Appointment.find({
+    const filter = {
         doctorId: doctor._id,
         date: normalizedDate,
-    })
+    };
+
+    if (status) {
+        filter.status = status;
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+
+    const [appointments, total] = await Promise.all([
+        Appointment.find(filter)
         .populate('patientId', 'name email')
         .sort({ slotStart: 1 })
-        .lean();
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+        Appointment.countDocuments(filter),
+    ]);
 
     res.status(200).json({
         success: true,
         date: normalizedDate,
         count: appointments.length,
+        total,
+        page: pageNum,
+        pages: Math.ceil(total / limitNum),
         appointments,
     });
 });
@@ -246,93 +394,188 @@ const getDoctorAppointments = asyncHandler(async (req, res) => {
 const cancelAppointment = asyncHandler(async (req, res) => {
     const { id: appointmentId } = req.params;
     const userId = req.user.userId;
+    const cancelled = await withOptionalTransaction(async ({ session }) => {
+        const { appointment } = await loadAuthorizedAppointmentForUser(appointmentId, userId, session);
 
-    // Start MongoDB session for transaction
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-        // 1. Fetch appointment with session and exec()
-        const appointment = await Appointment.findById(appointmentId)
-            .session(session)
-            .exec();
-
-        if (!appointment) {
-            throw new Error('Appointment not found');
-        }
-
-        // 2. Validate ownership (patient or doctor)
-        const doctor = await Doctor.findById(appointment.doctorId).session(session);
-        const isPatient = appointment.patientId.toString() === userId;
-        const isDoctor = doctor && doctor.userId.toString() === userId;
-
-        if (!isPatient && !isDoctor) {
-            throw new Error('Unauthorized to cancel this appointment');
-        }
-
-        // 3. Prevent double cancellation
         if (appointment.status === 'cancelled') {
             throw new Error('Appointment already cancelled');
         }
 
-        const previousStatus = appointment.status;
-
-        // 4. Update appointment status
-        appointment.status = 'cancelled';
-        await appointment.save({ session });
-
-        // 5. Atomic decrement
-        const queue = await DailyQueue.findOneAndUpdate(
-            { doctorId: appointment.doctorId, date: appointment.date },
-            { $inc: { appointmentCount: -1 } },
-            { new: true, session }
-        );
-
-        // 6. Safeguard against negative count
-        if (queue && queue.appointmentCount < 0) {
-            throw new Error('Invalid queue state - negative count');
+        if (appointment.status === 'completed' || appointment.status === 'no_show') {
+            throw new Error('Closed appointments cannot be cancelled');
         }
 
-        // 7. Update waiting list status
-        await DailyQueue.findOneAndUpdate(
-            { doctorId: appointment.doctorId, date: appointment.date },
-            {
-                $set: {
-                    'waitingList.$[elem].status': 'cancelled',
-                },
-            },
-            {
-                arrayFilters: [{ 'elem.appointmentId': appointmentId }],
-                session,
-            }
-        );
+        const previousStatus = appointment.status === 'booked' ? 'waiting' : appointment.status;
+        appointment.status = 'cancelled';
+        await appointment.save(withSession(session));
+
+        const queue = await queueService.createQueueIfMissing(appointment.doctorId, appointment.date, session);
+        queue.appointmentCount = Math.max(0, (queue.appointmentCount || 0) - 1);
+        queue.waitingList = (queue.waitingList || []).map((entry) => (
+            entry.appointmentId?.toString() === appointmentId
+                ? { ...entry.toObject?.() || entry, status: 'cancelled' }
+                : entry
+        ));
+        await queue.save(withSession(session));
 
         await QueueEvent.create([{
             appointmentId: appointment._id,
             doctorId: appointment.doctorId,
             patientId: appointment.patientId,
-            queueId: queue?._id,
+            queueId: queue._id,
             event: 'cancelled',
             previousEvent: previousStatus,
             timestamp: new Date(),
             metadata: {
                 tokenNumber: appointment.tokenNumber,
             },
-        }], { session });
+        }], withSession(session));
 
-        await session.commitTransaction();
+        return appointment;
+    });
 
-        res.status(200).json({
-            success: true,
-            message: 'Appointment cancelled successfully',
-        });
-    } catch (error) {
-        await session.abortTransaction();
+    await queueService.emitQueueUpdated(cancelled.doctorId, cancelled.date, req.app.get('io'));
+
+    res.status(200).json({
+        success: true,
+        message: 'Appointment cancelled successfully',
+    });
+});
+
+/**
+ * @desc    Reschedule an appointment
+ * @route   PATCH /api/appointments/:id/reschedule
+ * @access  Private (Patient owner or treating doctor)
+ */
+const rescheduleAppointment = asyncHandler(async (req, res) => {
+    const { id: appointmentId } = req.params;
+    const { date, slotStart, slotEnd } = req.body;
+    const userId = req.user.userId;
+
+    const newDate = normalizeDate(new Date(date));
+    const slotStartDate = new Date(slotStart);
+    const slotEndDate = new Date(slotEnd);
+
+    if (slotEndDate <= slotStartDate) {
         res.status(400);
-        throw error;
-    } finally {
-        session.endSession();
+        throw new Error('Invalid slot time range');
     }
+
+    if (isInPast(slotStartDate)) {
+        res.status(400);
+        throw new Error('Cannot reschedule to a past slot');
+    }
+
+    const result = await withOptionalTransaction(async ({ session }) => {
+        const { appointment, doctor } = await loadAuthorizedAppointmentForUser(appointmentId, userId, session);
+
+        if (!REBOOKABLE_STATUSES.includes(appointment.status)) {
+            throw new Error('This appointment can no longer be rescheduled');
+        }
+
+        if (ACTIVE_CONSULTATION_STATUSES.includes(appointment.status)) {
+            throw new Error('Appointments already in consultation cannot be rescheduled');
+        }
+
+        const slotCheck = await checkSlotAvailability(
+            appointment.doctorId,
+            newDate,
+            slotStartDate,
+            slotEndDate,
+            { doctorDoc: doctor, session }
+        );
+
+        if (!slotCheck.available) {
+            res.status(slotCheck.reasonCode === 'slot_booked' ? 409 : 400);
+            throw new Error(slotCheck.message);
+        }
+
+        return moveAppointmentToSlot({
+            appointment,
+            doctor,
+            newDate,
+            slotStartDate,
+            slotEndDate,
+            session,
+            queueEvent: 'rescheduled',
+        });
+    });
+
+    await emitQueueUpdates(result.appointment.doctorId, [result.previousDate, result.nextDate], req.app.get('io'));
+
+    res.status(200).json({
+        success: true,
+        message: 'Appointment rescheduled successfully',
+        appointment: result.appointment,
+    });
+});
+
+/**
+ * @desc    Reassign an active appointment to the next available slot
+ * @route   POST /api/appointments/:id/reassign-next-available
+ * @access  Private (Patient owner or treating doctor)
+ */
+const reassignAppointmentToNextAvailable = asyncHandler(async (req, res) => {
+    const { id: appointmentId } = req.params;
+    const userId = req.user.userId;
+
+    const result = await withOptionalTransaction(async ({ session }) => {
+        const { appointment, doctor } = await loadAuthorizedAppointmentForUser(appointmentId, userId, session);
+
+        if (!REBOOKABLE_STATUSES.includes(appointment.status)) {
+            throw new Error('This appointment can no longer be reassigned');
+        }
+
+        if (appointment.status === 'completed' || appointment.status === 'cancelled' || appointment.status === 'no_show') {
+            throw new Error('Closed appointments cannot be reassigned');
+        }
+
+        const searchStart = new Date(Math.max(
+            Date.now(),
+            new Date(appointment.slotEnd || appointment.slotStart || appointment.date).getTime() + 60 * 1000
+        ));
+
+        const nextSlot = await findNextAvailableSlot(appointment.doctorId, searchStart, {
+            session,
+            doctorDoc: doctor,
+            searchWindowDays: 45,
+        });
+
+        if (!nextSlot) {
+            res.status(404);
+            throw new Error('No future slot is available for reassignment');
+        }
+
+        return moveAppointmentToSlot({
+            appointment,
+            doctor,
+            newDate: normalizeDate(nextSlot.date),
+            slotStartDate: new Date(nextSlot.slotStart),
+            slotEndDate: new Date(nextSlot.slotEnd),
+            session,
+            queueEvent: 'rescheduled',
+        });
+    });
+
+    await emitQueueUpdates(result.appointment.doctorId, [result.previousDate, result.nextDate], req.app.get('io'));
+
+    notificationService
+        .sendAppointmentRescheduledNotification({
+            patientId: result.appointment.patientId,
+            appointmentId: result.appointment._id,
+            doctorId: result.appointment.doctorId,
+            doctorName: result.doctor?.userId?.name || null,
+            previousSlotStart: result.previousSlotStart,
+            newSlotStart: result.appointment.slotStart,
+            reason: 'Appointment moved to the next available slot',
+        }, req.app.get('io'))
+        .catch(() => {});
+
+    res.status(200).json({
+        success: true,
+        message: 'Appointment reassigned to the next available slot',
+        appointment: result.appointment,
+    });
 });
 
 
@@ -476,5 +719,7 @@ module.exports = {
     setPriority,
     getWaitInfo,
     getAppointmentById,
+    rescheduleAppointment,
+    reassignAppointmentToNextAvailable,
 };
 

@@ -30,8 +30,8 @@ const appointmentSchema = new mongoose.Schema(
         },
         status: {
             type: String,
-            enum: ['booked', 'waiting', 'in_progress', 'completed', 'cancelled', 'no_show'],
-            default: 'booked',
+            enum: ['booked', 'waiting', 'in_progress', 'in_consultation', 'completed', 'cancelled', 'no_show'],
+            default: 'waiting',
         },
         reminderSent: {
             type: Boolean,

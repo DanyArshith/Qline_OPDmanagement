@@ -1,6 +1,7 @@
 const queueService = require('../services/queueService');
 const asyncHandler = require('../utils/asyncHandler');
 const Doctor = require('../models/Doctor');
+const { autoCarryForwardPastAppointmentsForDoctor } = require('../services/appointmentCarryForwardService');
 
 const resolveDoctorProfileId = async (userId, res) => {
     const doctor = await Doctor.findOne({ userId }).select('_id').lean();
@@ -9,6 +10,15 @@ const resolveDoctorProfileId = async (userId, res) => {
         throw new Error('Doctor profile not found');
     }
     return doctor._id;
+};
+
+const resolveDoctorProfile = async (userId, res) => {
+    const doctor = await Doctor.findOne({ userId });
+    if (!doctor) {
+        res.status(404);
+        throw new Error('Doctor profile not found');
+    }
+    return doctor;
 };
 
 /**
@@ -81,10 +91,15 @@ exports.resumeQueue = asyncHandler(async (req, res) => {
  * GET /api/queue/current-state
  */
 exports.getCurrentState = asyncHandler(async (req, res) => {
-    const doctorId = await resolveDoctorProfileId(req.user.userId, res);
+    const doctor = await resolveDoctorProfile(req.user.userId, res);
     const { date } = req.query;
 
-    const state = await queueService.getQueueState(doctorId, date);
+    await autoCarryForwardPastAppointmentsForDoctor({
+        doctor,
+        io: req.app.get('io'),
+    });
+
+    const state = await queueService.getQueueState(doctor._id, date);
 
     res.json(state);
 });

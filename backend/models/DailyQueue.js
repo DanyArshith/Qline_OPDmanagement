@@ -35,7 +35,7 @@ const dailyQueueSchema = new mongoose.Schema(
                 tokenNumber: Number,
                 status: {
                     type: String,
-                    enum: ['waiting', 'in_progress', 'completed', 'cancelled', 'no_show'],
+                    enum: ['waiting', 'in_progress', 'in_consultation', 'completed', 'cancelled', 'no_show'],
                     default: 'waiting',
                 },
             },

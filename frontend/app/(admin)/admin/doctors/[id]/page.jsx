@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
@@ -30,7 +30,7 @@ export default function AdminDoctorDetailPage({ params }) {
     const [showDelete, setShowDelete] = useState(false)
     const [deleting, setDeleting] = useState(false)
 
-    const fetchDoctor = async () => {
+    const fetchDoctor = useCallback(async () => {
         try {
             const r = await api.get(`/api/admin/doctors/${id}`)
             setData(r.data)
@@ -43,9 +43,9 @@ export default function AdminDoctorDetailPage({ params }) {
         } finally {
             setLoading(false)
         }
-    }
+    }, [id, toast])
 
-    useEffect(() => { fetchDoctor() }, [id])
+    useEffect(() => { fetchDoctor() }, [fetchDoctor])
 
     const handleEdit = async (e) => {
         e.preventDefault()

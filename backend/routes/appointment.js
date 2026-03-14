@@ -11,6 +11,8 @@ const {
     setPriority,
     getWaitInfo,
     getAppointmentById,
+    rescheduleAppointment,
+    reassignAppointmentToNextAvailable,
 } = require('../controllers/appointmentController');
 
 // Validation middleware
@@ -106,6 +108,44 @@ router.delete(
         param('id').isMongoId().withMessage('Invalid appointment ID'),
     ]),
     cancelAppointment
+);
+
+/**
+ * @route   PATCH /api/appointments/:id/reschedule
+ * @desc    Reschedule an appointment
+ * @access  Private (owner patient or treating doctor)
+ */
+router.patch(
+    '/:id/reschedule',
+    verifyToken,
+    validate([
+        param('id').isMongoId().withMessage('Invalid appointment ID'),
+        body('date')
+            .notEmpty()
+            .withMessage('Date is required')
+            .isISO8601()
+            .withMessage('Date must be in valid ISO 8601 format'),
+        body('slotStart')
+            .notEmpty()
+            .withMessage('Slot start time is required')
+            .isISO8601()
+            .withMessage('Slot start must be a valid ISO 8601 datetime'),
+        body('slotEnd')
+            .notEmpty()
+            .withMessage('Slot end time is required')
+            .isISO8601()
+            .withMessage('Slot end must be a valid ISO 8601 datetime'),
+    ]),
+    rescheduleAppointment
+);
+
+router.post(
+    '/:id/reassign-next-available',
+    verifyToken,
+    validate([
+        param('id').isMongoId().withMessage('Invalid appointment ID'),
+    ]),
+    reassignAppointmentToNextAvailable
 );
 
 /**

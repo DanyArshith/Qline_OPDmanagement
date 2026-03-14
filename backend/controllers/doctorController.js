@@ -13,8 +13,12 @@ const {
     generateSlots,
     getDoctorAvailabilityForDate,
     getNormalizedWorkingDays,
+    findNextAvailableSlot,
 } = require('../services/slotService');
 const { updateAvailability } = require('../services/doctorAvailabilityService');
+const estimationService = require('../services/estimationService');
+const { syncDoctorSchedule } = require('../services/doctorScheduleService');
+const { autoCarryForwardPastAppointmentsForDoctor } = require('../services/appointmentCarryForwardService');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
 
@@ -53,14 +57,19 @@ const buildWaitTimeSummary = async (doctor) => {
         status: { $in: ['waiting', 'booked'] },
     });
 
-    const avgTime = doctor.averageConsultTime || doctor.defaultConsultTime || 15;
-    const estimatedWaitTime = Math.min(avgTime * waitingCount, 180);
+    const avgTime = await estimationService.getAverageConsultTime(doctor._id);
+    const estimatedWaitTime = avgTime * waitingCount;
+    const nextAvailableSlot = await findNextAvailableSlot(doctor._id, new Date(), {
+        doctorDoc: doctor,
+        searchWindowDays: 14,
+    });
 
     return {
         estimatedWaitMinutes: Math.round(estimatedWaitTime),
         patientsInQueue: waitingCount,
         averageConsultationTime: avgTime,
         description: `${Math.round(estimatedWaitTime)} min wait, ${waitingCount} in queue`,
+        nextAvailableSlot: nextAvailableSlot?.slotStart || null,
     };
 };
 
@@ -141,6 +150,8 @@ const configureSchedule = asyncHandler(async (req, res) => {
         });
     }
 
+    await syncDoctorSchedule(doctor);
+
     await cacheManager.invalidateByTag(`doctor:${doctor._id}:slots`);
     logger.info(`Cache invalidated for doctor ${doctor._id} after schedule update`);
 
@@ -205,6 +216,7 @@ const updateAvailabilityStatus = asyncHandler(async (req, res) => {
     });
 
     await cacheManager.invalidateByTag(`doctor:${doctor._id}:slots`);
+    await syncDoctorSchedule(result.doctor);
 
     res.status(200).json({
         success: true,
@@ -228,9 +240,15 @@ const getMySchedule = asyncHandler(async (req, res) => {
         throw new Error('Doctor profile not found');
     }
 
+    const carryForward = await autoCarryForwardPastAppointmentsForDoctor({
+        doctor,
+        io: req.app.get('io'),
+    });
+
     res.status(200).json({
         success: true,
         doctor: serializeDoctorSchedule(doctor),
+        autoReassignedAppointments: carryForward.reassignedCount,
     });
 });
 
@@ -278,6 +296,11 @@ const getTodayAppointments = asyncHandler(async (req, res) => {
         res.status(404);
         throw new Error('Doctor profile not found');
     }
+
+    await autoCarryForwardPastAppointmentsForDoctor({
+        doctor,
+        io: req.app.get('io'),
+    });
 
     const today = normalizeDate(new Date());
 
@@ -340,6 +363,10 @@ const searchDoctors = asyncHandler(async (req, res) => {
             schedule: buildScheduleSnapshot(doctor),
             availabilityStatus: getDoctorAvailabilityForDate(doctor, new Date()),
             waitingTime: await buildWaitTimeSummary(doctor),
+            nextAvailableSlot: (await findNextAvailableSlot(doctor._id, new Date(), {
+                doctorDoc: doctor,
+                searchWindowDays: 14,
+            }))?.slotStart || null,
         }))
     );
 
@@ -375,6 +402,10 @@ const getDoctorById = asyncHandler(async (req, res) => {
             schedule: buildScheduleSnapshot(doctor),
             availabilityStatus: getDoctorAvailabilityForDate(doctor, new Date()),
             waitingTime: await buildWaitTimeSummary(doctor),
+            nextAvailableSlot: (await findNextAvailableSlot(doctor._id, new Date(), {
+                doctorDoc: doctor,
+                searchWindowDays: 14,
+            }))?.slotStart || null,
         },
     });
 });

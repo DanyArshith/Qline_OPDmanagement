@@ -28,6 +28,7 @@ export const STATUS_CONFIG = {
     booked: { label: 'Booked', bg: 'bg-info/10', text: 'text-info' },
     waiting: { label: 'Waiting', bg: 'bg-info/10', text: 'text-info' },
     in_progress: { label: 'In Progress', bg: 'bg-warning/10', text: 'text-warning' },
+    in_consultation: { label: 'In Consultation', bg: 'bg-warning/10', text: 'text-warning' },
     completed: { label: 'Completed', bg: 'bg-success/10', text: 'text-success' },
     cancelled: { label: 'Cancelled', bg: 'bg-error/10', text: 'text-error' },
     no_show: { label: 'No Show', bg: 'bg-error/10', text: 'text-error' },

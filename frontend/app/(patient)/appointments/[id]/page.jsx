@@ -13,7 +13,7 @@ import { ConfirmModal } from '@/components/ui/Modal'
 import { ErrorState, LoadingState } from '@/components/ui/AsyncState'
 
 const CANCELABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
-const TRACKABLE_STATUSES = new Set(['booked', 'waiting', 'in_progress'])
+const TRACKABLE_STATUSES = new Set(['booked', 'waiting', 'in_consultation', 'in_progress'])
 
 export default function AppointmentDetailPage() {
     const params = useParams()
@@ -119,8 +119,8 @@ export default function AppointmentDetailPage() {
                 <div className="rounded-lg border border-border bg-bg p-4">
                     <p className="text-caption text-text-secondary">Supported actions in MVP</p>
                     <p className="text-body text-text-primary">
-                        Queue tracking and cancellation are available when the appointment is active.
-                        Rescheduling and payments are deferred in this phase.
+                        Queue tracking and cancellation are available while the appointment is active.
+                        If your doctor becomes unavailable, the booking will be rescheduled or cancelled automatically.
                     </p>
                 </div>
             </Card>
@@ -162,4 +162,3 @@ export default function AppointmentDetailPage() {
         </div>
     )
 }
-
