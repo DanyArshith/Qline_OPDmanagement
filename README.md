@@ -1,24 +1,43 @@
 # Qline
 
-Qline is an OPD queue and appointment management system with:
+Qline is a role-based OPD queue and appointment management system built for patients, doctors, and administrators. It combines appointment booking, real-time queue updates, medical record management, analytics, notifications, and admin oversight in one full-stack project.
 
-- `frontend`: Next.js 14 app
-- `backend`: Express + Socket.IO API
-- `worker`: background job processor backed by MongoDB
+## Live Links
 
-This repository is now set up for deployment without Docker.
+- Frontend: <https://qline-frontend-pv2l.onrender.com>
+- Backend API: <https://qline-api.onrender.com/>
+- Backend health check: <https://qline-api.onrender.com/health>
+- Project presentation: <https://1drv.ms/p/c/54b9ce31ac5c8a9e/IQDOoQ9AEnn8RpqPR4FY1lwZAeJ7igg49jWQ8KS6HAmKVgw?e=BgGhD3>
+- Final report document: [docs/QLINE Final Report.docx](docs/QLINE%20Final%20Report.docx)
 
-## Stack
+## What The Project Covers
 
-- Node.js 20+
-- Next.js 14
-- Express
-- MongoDB
-- Socket.IO
-- PM2 for process management
-- Nginx for reverse proxy and HTTPS
+- Patient portal for registration, doctor discovery, slot booking, live queue tracking, notifications, and medical record access
+- Doctor portal for schedule configuration, appointment handling, queue control, patient history review, analytics, and medical record creation
+- Admin portal for doctor and user management, live queue monitoring, system analytics, audit logs, support tickets, and settings
+- Real-time queue synchronization through Socket.IO
+- MongoDB-backed background workers for reminders, email, analytics, and notifications
 
-## Local development
+## Tech Stack
+
+- Frontend: Next.js 14, React 18, Tailwind CSS, Axios, Socket.IO Client
+- Backend: Node.js, Express, Mongoose, Socket.IO
+- Database: MongoDB
+- Security: JWT access tokens, refresh-token sessions, bcrypt, Helmet, rate limiting
+- Operations: Render deployment blueprints, PM2, GitHub Actions, Nginx template
+
+## Repository Structure
+
+```text
+.
+|-- frontend/   Next.js application
+|-- backend/    Express API, MongoDB models, workers, services, sockets
+|-- docs/       Reports, deployment guides, and evaluator documentation
+|-- deploy/     Deployment assets such as Nginx configuration
+|-- .github/    CI workflows
+```
+
+## Quick Start
 
 ### 1. Install dependencies
 
@@ -27,32 +46,23 @@ cd backend && npm install
 cd ../frontend && npm install
 ```
 
-### 2. Configure environment files
+### 2. Configure environment variables
 
-Backend:
+Backend uses `backend/.env` or the repo-root `.env`. Frontend uses `frontend/.env.local`.
 
-```bash
-cp backend/.env.example backend/.env
-```
+Minimum backend values:
 
-Frontend:
+- `MONGODB_URI`
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `MEDICAL_RECORD_ENCRYPTION_KEY`
+- `FRONTEND_URL=http://localhost:3000`
 
-```bash
-cp frontend/.env.example frontend/.env.local
-```
+Minimum frontend values:
 
-Minimum values to update:
+- `NEXT_PUBLIC_API_URL=http://localhost:5000`
 
-- `backend/.env`
-  - `MONGODB_URI`
-  - `JWT_SECRET`
-  - `JWT_REFRESH_SECRET`
-  - `MEDICAL_RECORD_ENCRYPTION_KEY`
-  - `FRONTEND_URL=http://localhost:3000`
-- `frontend/.env.local`
-  - `NEXT_PUBLIC_API_URL=http://localhost:5000`
-
-### 3. Start the app
+### 3. Run locally
 
 Backend API:
 
@@ -68,73 +78,47 @@ cd frontend
 npm run dev
 ```
 
-Optional worker in a separate terminal:
+Optional standalone workers:
 
 ```bash
 cd backend
 npm run worker
 ```
 
-## Production deployment
+## Deployment Notes
 
-Recommended production layout:
+- Current runtime is MongoDB-only. Redis is not required.
+- Docker files remain in the repo as legacy artifacts, but the active deployment flow does not depend on Docker.
+- The backend exposes `/` and `/health` for environment verification.
+- Render deployment manifests are available in [render.yaml](render.yaml) and [render-paid.yaml](render-paid.yaml).
 
-- `qline-api` on port `5000`
-- `qline-worker` as a separate PM2 process
-- `qline-frontend` on port `3000`
-- `Nginx` in front of both
-- `MongoDB Atlas` or another managed MongoDB instance
+## Detailed Documentation
 
-Quick hosted option:
+Evaluator-oriented documentation lives in [`docs/detailed documents`](docs/detailed%20documents/README.md):
 
-- Render Blueprint via [`render.yaml`](/d:/Projects/Qline/render.yaml)
-- Free Render demo Blueprint via [`render-free.yaml`](/d:/Projects/Qline/render-free.yaml)
-- Render guide: [`docs/RENDER_DEPLOYMENT.md`](/d:/Projects/Qline/docs/RENDER_DEPLOYMENT.md)
+- [Project Overview](docs/detailed%20documents/01-project-overview.md)
+- [Links And Deployments](docs/detailed%20documents/02-links-and-deployments.md)
+- [Frontend Pages And Roles](docs/detailed%20documents/03-frontend-pages-and-role-guide.md)
+- [Backend API Reference](docs/detailed%20documents/04-backend-api-reference.md)
+- [Database Structure](docs/detailed%20documents/05-database-structure.md)
+- [System Workflow And Core Functions](docs/detailed%20documents/06-system-workflow-and-core-functions.md)
 
-Use these files:
+Additional supporting docs:
 
-- PM2 config: [`ecosystem.config.js`](/d:/Projects/Qline/ecosystem.config.js)
-- Nginx template: [`deploy/nginx/qline.conf`](/d:/Projects/Qline/deploy/nginx/qline.conf)
-- Full guide: [`docs/DEPLOYMENT.md`](/d:/Projects/Qline/docs/DEPLOYMENT.md)
+- [Deployment Guide](docs/DEPLOYMENT.md)
+- [Render Deployment Guide](docs/RENDER_DEPLOYMENT.md)
+- [Design Document](docs/qline_design_document.md)
+- [Product Requirements](docs/qline_product_requirements_document.md)
+- [Tech Stack Document](docs/qline_tech_stack_document.md)
 
-High-level deploy flow:
+## Project Support Files
 
-```bash
-cd /var/www/qline/backend && npm ci
-cd /var/www/qline/frontend && npm ci && npm run build
-cd /var/www/qline && pm2 start ecosystem.config.js
-```
+- [LICENSE](LICENSE)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [backend/README.md](backend/README.md)
+- [frontend/README.md](frontend/README.md)
 
-## Important notes
+## License
 
-- Docker files still exist in the repo as legacy artifacts, but they are not required for local or production deployment.
-- Redis is no longer part of the runtime. Jobs and caching are MongoDB-backed in the current codebase.
-- Run a single backend instance unless you first add multi-instance coordination for Socket.IO and in-memory cache behavior.
-
-## Health check
-
-Backend health endpoint:
-
-```text
-GET /health
-```
-
-## Scripts
-
-Backend:
-
-- `npm run dev`
-- `npm start`
-- `npm run worker`
-- `npm test`
-
-Frontend:
-
-- `npm run dev`
-- `npm run build`
-- `npm start`
-
-## Repository notes
-
-- Backend env loading now supports both `backend/.env` and the repo-root `.env`, so existing setups do not break.
-- Frontend env files should live inside `frontend/` because Next.js reads env files from the app directory.
+This repository is licensed under the ISC License. See [LICENSE](LICENSE).
